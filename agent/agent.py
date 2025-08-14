@@ -51,6 +51,9 @@ def write_tests(ticket):
 def implement_feature(ticket, failing_output=None):
     # Build a code-only allowlist (exclude tests; tests are generated separately)
     allowlist = [p for p in ticket['area_allowlist'] if not p.startswith('tests/')]
+    # If cli.py is allowed, allow __main__.py too (models often add module entrypoints)
+    if 'src/your_package/cli.py' in allowlist and 'src/your_package/__main__.py' not in allowlist:
+        allowlist.append('src/your_package/__main__.py')
     file_context = read_allowed_files(ticket, paths=allowlist)
     # Expand allowlist to include sanitized variants if needed (mostly for code paths)
     expanded = []
