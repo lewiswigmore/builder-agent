@@ -1,4 +1,19 @@
-import subprocess, textwrap
+import os, re, subprocess, textwrap
+
+
+def _repo_slug() -> str:
+    # Prefer the GitHub Actions env var if present
+    slug = os.environ.get('GITHUB_REPOSITORY')
+    if slug:
+        return slug
+    # Fallback: parse from git remote url
+    remote = subprocess.run(['git', 'remote', 'get-url', 'origin'], capture_output=True, text=True)
+    url = (remote.stdout or '').strip()
+    # https://github.com/owner/repo.git or https://github.com/owner/repo
+    m = re.search(r'github\.com[:/]+([^/]+)/([^/.]+)(?:\.git)?$', url)
+    if m:
+        return f"{m.group(1)}/{m.group(2)}"
+    return ''
 
 def ensure_pr(ticket, branch, draft=False, body_suffix=""):
     title = f"{ticket['id']}: {ticket['title']}"
@@ -26,6 +41,14 @@ def ensure_pr(ticket, branch, draft=False, body_suffix=""):
     res = subprocess.run(args, capture_output=True, text=True)
     if res.returncode == 0 and res.stdout.strip():
         return res.stdout.strip()
+    # Try to edit if PR exists already
     subprocess.run(['gh', 'pr', 'edit', branch, '--title', title, '--body', body], check=False)
     url = subprocess.run(['gh', 'pr', 'view', branch, '--json', 'url', '--jq', '.url'], capture_output=True, text=True)
-    return url.stdout.strip()
+    pr_url = (url.stdout or '').strip()
+    if pr_url:
+        return pr_url
+    # Final fallback: construct the new-PR URL so humans can click it
+    slug = _repo_slug()
+    if slug:
+        return f"https://github.com/{slug}/pull/new/{branch}"
+    return ''
