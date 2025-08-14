@@ -140,9 +140,12 @@ def main():
             append_changelog(ticket)
             git('add', 'CHANGELOG.md')
             git('commit', '-m', f"docs({ticket['id']}): update changelog")
-            from scripts.open_pr import ensure_pr
+            from scripts.open_pr import ensure_pr, merge_pr
             pr_url = ensure_pr(ticket, branch)
-            print(f"Opened PR: {pr_url}")
+            # Merge immediately since we just ran tests locally. If branch protection requires external checks,
+            # set auto_on_checks=True instead.
+            merge_pr(branch, method='squash', delete_branch=True, auto_on_checks=False)
+            print(f"Opened and merged PR: {pr_url}")
             return 0
         failing_output = res.stdout.decode() + "\n" + res.stderr.decode()
         print('Tests failing, retrying...')

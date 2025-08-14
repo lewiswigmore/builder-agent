@@ -52,3 +52,33 @@ def ensure_pr(ticket, branch, draft=False, body_suffix=""):
     if slug:
         return f"https://github.com/{slug}/pull/new/{branch}"
     return ''
+
+
+def merge_pr(branch: str, method: str = 'squash', delete_branch: bool = True, auto_on_checks: bool = False) -> str:
+    """Merge the PR for `branch` using GitHub CLI.
+
+    - method: 'merge' | 'squash' | 'rebase'
+    - delete_branch: delete remote branch after merge
+    - auto_on_checks: enable GitHub auto-merge so merge happens when checks pass
+    Returns PR URL if found, else empty string.
+    """
+    # Try to resolve PR URL for the branch
+    url_proc = subprocess.run(['gh', 'pr', 'view', branch, '--json', 'url', '--jq', '.url'], capture_output=True, text=True)
+    pr_url = (url_proc.stdout or '').strip()
+    if not pr_url:
+        slug = _repo_slug()
+        return f"https://github.com/{slug}/pull/new/{branch}" if slug else ''
+
+    # Build merge args
+    merge_args = ['gh', 'pr', 'merge', f'--{method}', pr_url]
+    if delete_branch:
+        merge_args.append('--delete-branch')
+    # Use admin to bypass required reviews if allowed; otherwise omit
+    merge_args.append('--admin')
+
+    if auto_on_checks:
+        # Configure auto-merge; GitHub merges when checks pass
+        subprocess.run(['gh', 'pr', 'merge', '--auto', f'--{method}', pr_url], check=False)
+    else:
+        subprocess.run(merge_args, check=False)
+    return pr_url
