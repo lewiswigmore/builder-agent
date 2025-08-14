@@ -74,8 +74,11 @@ def apply_patches(patch_text: str, allowlist: List[str]):
     1) File blocks: ```file:relative/path\n<full file content>```
     2) Unified diffs: ```diff\n--- a/path\n+++ b/path\n@@ ...``` (or raw unified diffs without fences)
     """
+    # Normalize newlines across entire output
+    patch_text = patch_text.replace('\r\n', '\n').replace('\r', '\n')
+
     # Prefer file blocks for robustness
-    file_blocks = re.findall(r"```file:([^\n\r]+)\s+\n(.*?)\n```", patch_text, flags=re.S)
+    file_blocks = re.findall(r"```file:[ \t]*([^\n\r]+)\n(.*?)\n```", patch_text, flags=re.S)
     if file_blocks:
         for rel_path, content in file_blocks:
             p = rel_path.strip().replace('\\', '/')
@@ -91,16 +94,34 @@ def apply_patches(patch_text: str, allowlist: List[str]):
         return
 
     # Otherwise, handle unified diffs
-    blocks = re.findall(r'```diff\n(.*?)\n```', patch_text, flags=re.S)
+    # Capture diff blocks in fences (diff or patch, optional whitespace)
+    blocks = re.findall(r'```\s*(?:diff|patch)[^\n]*\n(.*?)\n```', patch_text, flags=re.S)
     if not blocks:
-        # Fallback: look for raw diff markers
-        if ('--- a/' in patch_text and '+++ b/' in patch_text) or ('--- ' in patch_text and '+++ ' in patch_text):
-            blocks = [patch_text]
+        # Fallback: strip any code fences and look for raw diff markers
+        if '```' in patch_text:
+            cleaned = '\n'.join(line for line in patch_text.splitlines() if not line.strip().startswith('```'))
+        else:
+            cleaned = patch_text
+        if ('--- a/' in cleaned and '+++ b/' in cleaned) or ('--- ' in cleaned and '+++ ' in cleaned):
+            blocks = [cleaned]
         else:
             raise RuntimeError('No patch blocks produced by LLM')
 
+    def _sanitize_diff_block(text: str) -> str:
+        # Remove any stray code fence lines
+        lines = [ln for ln in text.split('\n') if not ln.strip().startswith('```')]
+        # Find first real diff header and slice from there
+        start_idx = 0
+        header_patterns = (re.compile(r'^diff\s+--git\s+'), re.compile(r'^---\s+'),)
+        for i, ln in enumerate(lines):
+            if any(pat.match(ln) for pat in header_patterns):
+                start_idx = i
+                break
+        cleaned = '\n'.join(lines[start_idx:]).strip()
+        return cleaned
+
     for raw in blocks:
-        block = raw.strip().replace('\r\n', '\n')
+        block = _sanitize_diff_block(raw.strip())
         changed_files = re.findall(r'^\+\+\+\s+b/(.*)$', block, flags=re.M)
         if not changed_files:
             changed_files = re.findall(r'^\+\+\+\s+(.+)$', block, flags=re.M)

@@ -13,7 +13,13 @@ def ensure_pr(ticket, branch, draft=False, body_suffix=""):
 
     {suffix}
     ''').format(desc=ticket['description'], tests='\n'.join(f'- {t}' for t in ticket['acceptance_tests']), suffix=body_suffix)
-    subprocess.run(['git', 'push', '-u', 'origin', branch], check=True)
+    # Ensure we can push: if branch exists, attempt a rebase pull first, then push
+    subprocess.run(['git', 'fetch', 'origin', branch], check=False)
+    subprocess.run(['git', 'rebase', f'origin/{branch}'], check=False)
+    push = subprocess.run(['git', 'push', '-u', 'origin', branch], capture_output=True, text=True)
+    if push.returncode != 0:
+        # If push rejected due to non-fast-forward, force-with-lease to avoid overwriting others' work unintentionally
+        subprocess.run(['git', 'push', '--force-with-lease', '-u', 'origin', branch], check=True)
     args = ['gh', 'pr', 'create', '--title', title, '--body', body, '--base', 'main', '--head', branch]
     if draft:
         args.append('--draft')
