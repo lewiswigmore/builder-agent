@@ -5,14 +5,42 @@ from agent.policies import MAX_RETRIES, MAX_CHANGED_LINES_DEFAULT
 
 REPO = pathlib.Path(__file__).resolve().parents[1]
 
+def read_allowed_files(ticket: dict) -> str:
+    """Read current contents of allow-listed files to provide context to the LLM."""
+    content_parts = []
+    for file_path in ticket.get('area_allowlist', []):
+        try:
+            full_path = REPO / file_path
+            if full_path.exists() and full_path.is_file():
+                content = full_path.read_text(encoding='utf-8')
+                content_parts.append(f"--- {file_path} ---\n{content}")
+        except Exception:
+            # Ignore unreadable files; context is best-effort
+            pass
+    return "\n\n".join(content_parts)
+
+def _sanitize_ticket_id(ticket_id: str) -> str:
+    """Create a filesystem- and import-friendly suffix for filenames from the ticket id.
+    e.g., FEAT-001 -> feat_001
+    """
+    safe = ticket_id.lower().replace('-', '_')
+    # strip any characters outside [a-z0-9_]
+    safe = ''.join(ch for ch in safe if (ch.isalnum() or ch == '_'))
+    return safe
+
 def write_tests(ticket):
-    fname = (REPO / 'tests' / f"test_{ticket['id'].lower()}.py")
+    safe_id = _sanitize_ticket_id(ticket['id'])
+    fname = (REPO / 'tests' / f"test_{safe_id}.py")
     fname.parent.mkdir(parents=True, exist_ok=True)
     prompt = textwrap.dedent('''
     Write pytest tests for this feature, minimal and focused.
     Acceptance criteria:
     {criteria}
-    Project layout: src/your_package/
+    Project layout uses "src" layout at src/your_package/.
+    At the top of the test, add:
+        import sys, pathlib
+        sys.path.append(str(pathlib.Path(__file__).resolve().parents[1] / 'src'))
+    so that `import your_package` works during pytest.
     Only write Python code for pytest in one file. No prose.
     ''').format(criteria=json.dumps(ticket['acceptance_tests'], indent=2))
     test_code = call_llm(prompt)
@@ -20,8 +48,16 @@ def write_tests(ticket):
     return fname
 
 def implement_feature(ticket, failing_output=None):
+    file_context = read_allowed_files(ticket)
+    # Expand allowlist to include sanitized test filename variants to avoid mismatch
+    allowlist = list(ticket['area_allowlist'])
+    expanded = []
+    for p in allowlist:
+        if p.startswith('tests/') and '-' in p:
+            expanded.append(p.replace('-', '_'))
+    allowlist += [p for p in expanded if p not in allowlist]
     prompt = textwrap.dedent('''
-    Implement the feature below by editing only allow-listed files.
+    You are a senior software engineer. Implement the feature below by generating a patch in the unified diff format.
 
     Feature: {title}
 
@@ -31,13 +67,18 @@ def implement_feature(ticket, failing_output=None):
     Acceptance criteria:
     {criteria}
 
-    Only suggest diffs as unified patches in fenced blocks:
+    Here are the current contents of the files you are allowed to modify:
+    {file_context}
+
+    Your task is to generate a patch file to implement the feature.
+    Only suggest diffs as unified patches in fenced blocks.
+    Your response should only contain the patch, like this:
     ```diff
-    --- a/path.py
-    +++ b/path.py
-    @@
-    - old
-    + new
+    --- a/path/to/file.py
+    +++ b/path/to/file.py
+    @@ -1,1 +1,1 @@
+    - old content
+    + new content
     ```
     Keep total changed lines under {max_lines}.
     Allowed paths: {allowlist}
@@ -47,11 +88,12 @@ def implement_feature(ticket, failing_output=None):
         desc=ticket['description'],
         criteria=json.dumps(ticket['acceptance_tests'], indent=2),
         max_lines=ticket.get('max_changed_lines', MAX_CHANGED_LINES_DEFAULT),
-        allowlist=ticket['area_allowlist'],
-        failing=('Previous failing output:\n' + failing_output) if failing_output else ''
+        allowlist=allowlist,
+        failing=('Previous failing output:\n' + failing_output) if failing_output else '',
+        file_context=file_context or '(no files exist yet)'
     )
     patch_text = call_llm(prompt)
-    apply_patches(patch_text, ticket['area_allowlist'])
+    apply_patches(patch_text, allowlist)
 
 def append_changelog(ticket):
     path = REPO / 'CHANGELOG.md'
@@ -83,7 +125,14 @@ def main():
     attempt, failing_output = 0, None
     while attempt < MAX_RETRIES:
         attempt += 1
-        implement_feature(ticket, failing_output)
+        try:
+            implement_feature(ticket, failing_output)
+        except Exception as e:
+            # Capture error and retry with the failing output to guide the next attempt
+            err = f"{type(e).__name__}: {e}"
+            print('Patch application failed:', err)
+            failing_output = (failing_output or '') + "\n\nPatch application failed:\n" + err
+            continue
         git('add', '-A')
         git('commit', '-m', f"feat({ticket['id']}): {ticket['title']} (attempt {attempt})", allow_empty=True)
         res = run_tests()

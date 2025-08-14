@@ -40,9 +40,9 @@ def call_llm(prompt: str) -> str:
 
     system = (
         'You are a precise coding agent. Respond with only the requested artefact. '
-        'When asked to write tests, output only valid pytest code. '
+        'When asked to write tests, output only valid pytest code in a single file. '
         'When asked to implement code, output only unified diff patches wrapped in triple-fenced ```diff blocks. '
-        'Never add prose, comments, or extra fences.'
+        'Do not include explanations, extra code fences, or commentary.'
     )
     client = _azure_client()
     resp = client.chat.completions.create(
@@ -51,27 +51,56 @@ def call_llm(prompt: str) -> str:
             {'role': 'system', 'content': system},
             {'role': 'user', 'content': prompt},
         ],
-        temperature=1,
+    temperature=0.2,
         max_completion_tokens=4096,
     )
     out = resp.choices[0].message.content or ''
     return out
 
 def apply_patches(patch_text: str, allowlist: List[str]):
-    blocks = re.findall(r'```diff(.*?)```', patch_text, flags=re.S)
+    """Parse and apply unified diff patches from LLM output.
+
+    - Supports multiple ```diff fenced blocks.
+    - Falls back to raw unified diff if fences are missing.
+    - Enforces allowlist per changed file path.
+    - Applies each block separately for clearer errors.
+    """
+    # 1) Extract diff blocks
+    blocks = re.findall(r'```diff\n(.*?)\n```', patch_text, flags=re.S)
     if not blocks:
-        raise RuntimeError('No patch blocks produced by LLM')
-    tmp = tempfile.NamedTemporaryFile(delete=False, suffix='.patch')
-    try:
-        full = '\n'.join(b.strip() for b in blocks)
-        for path in re.findall(r'\+\+\+ b/(.*)', full):
-            if not any(path.startswith(p) for p in allowlist):
-                raise RuntimeError(f'Patch touches disallowed path: {path}')
-        tmp.write(full.encode())
-        tmp.close()
-        run_cmd(['git', 'apply', '--whitespace=fix', tmp.name])
-    finally:
+        # Fallback: look for raw diff markers
+        if ('--- a/' in patch_text and '+++ b/' in patch_text) or ('--- ' in patch_text and '+++ ' in patch_text):
+            blocks = [patch_text]
+        else:
+            raise RuntimeError('No patch blocks produced by LLM')
+
+    # 2) Apply each block individually
+    for raw in blocks:
+        block = raw.strip()
+        # Normalize line endings to LF to avoid CRLF issues on Windows runners
+        block = block.replace('\r\n', '\n')
+
+        # Collect files being changed from this block
+        changed_files = re.findall(r'^\+\+\+\s+b/(.*)$', block, flags=re.M)
+        if not changed_files:
+            # Some diffs may use paths without a/ b/ prefixes; attempt a generic capture
+            changed_files = re.findall(r'^\+\+\+\s+(.+)$', block, flags=re.M)
+
+        # Enforce allowlist
+        for path in changed_files:
+            # Normalize to forward slashes
+            p = path.strip().replace('\\', '/')
+            if not any(p.startswith(allowed) for allowed in allowlist):
+                raise RuntimeError(f'Patch touches disallowed path: {p}')
+
+        # Write and apply
+        tmp = tempfile.NamedTemporaryFile(delete=False, suffix='.patch', mode='w', encoding='utf-8', newline='\n')
         try:
-            os.unlink(tmp.name)
-        except FileNotFoundError:
-            pass
+            tmp.write(block)
+            tmp.close()
+            run_cmd(['git', 'apply', '--whitespace=fix', tmp.name])
+        finally:
+            try:
+                os.unlink(tmp.name)
+            except FileNotFoundError:
+                pass
