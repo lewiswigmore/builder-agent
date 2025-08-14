@@ -1,0 +1,13 @@
+features:
+  - id: FEAT-001
+    title: "Add CLI flag --greet NAME"
+    description: "If provided, print 'Hello, NAME!'. Otherwise print 'Hello, world!'."
+    acceptance_tests:
+      - "calling `yourcli --greet Alice` prints 'Hello, Alice!' and exits 0"
+      - "calling `yourcli` prints 'Hello, world!' and exits 0"
+    ready: true
+    status: todo
+    area_allowlist:
+      - "src/your_package/cli.py"
+      - "tests/test_feat-001.py"
+    max_changed_lines: 120
