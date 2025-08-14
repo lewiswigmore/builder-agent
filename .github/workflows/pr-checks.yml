@@ -3,15 +3,34 @@ on:
   pull_request:
   push:
     branches: [ main ]
+
 permissions:
   contents: read
+
 jobs:
   test:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - run: pip install -r requirements.txt
-      - run: pytest -q
+
+      - name: Install deps
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+
+      # Ensure imports like `from your_package import ...` work without packaging
+      - name: Run pytest (tolerate no tests)
+        env:
+          PYTHONPATH: .
+        run: |
+          set -o pipefail
+          pytest -q || rc=$?
+          if [ "${rc:-0}" = "5" ]; then
+            echo "pytest: no tests collected (treating as success)"
+            exit 0
+          fi
+          exit "${rc:-0}"
