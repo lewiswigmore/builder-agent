@@ -42,3 +42,31 @@ jobs:
           set -eu
           echo "Endpoint: ${AZURE_OPENAI_ENDPOINT}"
           echo "Deployment: ${AZURE_OPENAI_DEPLOYMENT}"
+          echo "API version: ${AZURE_OPENAI_API_VERSION}"
+          test -n "${AZURE_OPENAI_ENDPOINT}"
+          test -n "${AZURE_OPENAI_DEPLOYMENT}"
+          test -n "${AZURE_OPENAI_API_VERSION}"
+          test -n "${AZURE_OPENAI_API_KEY}"
+          echo "Config present."
+
+      # Auto-grow the backlog with tiny tickets when it runs low
+      - name: Generate backlog if low
+        env:
+          AZURE_OPENAI_ENDPOINT: ${{ vars.AZURE_OPENAI_ENDPOINT }}
+          AZURE_OPENAI_API_KEY: ${{ secrets.AZURE_OPENAI_API_KEY }}
+          AZURE_OPENAI_API_VERSION: ${{ vars.AZURE_OPENAI_API_VERSION }}
+          AZURE_OPENAI_DEPLOYMENT: ${{ vars.AZURE_OPENAI_DEPLOYMENT }}
+          PYTHONPATH: .
+        run: |
+          python scripts/generate_backlog.py --min-ready 1 --make 4
+
+      - name: Run agent
+        env:
+          AZURE_OPENAI_ENDPOINT: ${{ vars.AZURE_OPENAI_ENDPOINT }}
+          AZURE_OPENAI_API_KEY: ${{ secrets.AZURE_OPENAI_API_KEY }}
+          AZURE_OPENAI_API_VERSION: ${{ vars.AZURE_OPENAI_API_VERSION }}
+          AZURE_OPENAI_DEPLOYMENT: ${{ vars.AZURE_OPENAI_DEPLOYMENT }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}  # for gh cli
+          PYTHONPATH: .
+        run: python -m agent.agent
