@@ -43,9 +43,8 @@ def call_llm(prompt: str) -> str:
     system = (
         'You are a precise coding agent. Respond with only the requested artefact. '
         'When asked to write tests, output only valid pytest code in a single file. '
-        'When asked to implement code, prefer triple-fenced file blocks to provide complete files, like ```file:path/to/file.py```. '
-        'If using patches, output only unified diff patches wrapped in triple-fenced ```diff blocks. '
-        'Do not include explanations, extra fences, or commentary.'
+        'When asked to implement code, output ONLY triple-fenced file blocks with complete files, like ```file:path/to/file.py```. '
+        'Do not include explanations, diffs, or extra fences, only file blocks for changed files.'
     )
     client = _azure_client()
     create_kwargs = {
@@ -120,31 +119,73 @@ def apply_patches(patch_text: str, allowlist: List[str]):
         cleaned = '\n'.join(lines[start_idx:]).strip()
         return cleaned
 
+    def _split_per_file_diff(block: str) -> List[str]:
+        lines = block.split('\n')
+        chunks = []
+        cur = []
+        for ln in lines:
+            # A new file section starts at a '--- ' line or a 'diff --git' line
+            if ln.startswith('diff --git') or (ln.startswith('--- ') and cur):
+                if cur:
+                    chunks.append('\n'.join(cur).strip() + '\n')
+                    cur = []
+            cur.append(ln)
+        if cur:
+            chunks.append('\n'.join(cur).strip() + '\n')
+        return chunks
+
+    def _clean_spurious_lines(chunk: str) -> str:
+        # Drop stray fences, ensure modifications happen only within hunks
+        out = []
+        in_hunk = False
+        for ln in chunk.split('\n'):
+            if ln.strip().startswith('```'):
+                continue
+            if ln.startswith('@@'):
+                in_hunk = True
+                out.append(ln)
+                continue
+            if ln.startswith('diff --git') or ln.startswith('index ') or ln.startswith('--- ') or ln.startswith('+++ '):
+                in_hunk = False
+                out.append(ln)
+                continue
+            if ln.startswith('+') or ln.startswith('-'):
+                if not in_hunk:
+                    # Skip stray +/- lines outside hunks (likely formatting artefacts)
+                    continue
+                out.append(ln)
+                continue
+            # context line or blank
+            out.append(ln)
+        cleaned = '\n'.join(out).strip() + '\n'
+        return cleaned
+
     for raw in blocks:
         block = _sanitize_diff_block(raw.strip())
-        changed_files = re.findall(r'^\+\+\+\s+b/(.*)$', block, flags=re.M)
-        if not changed_files:
-            changed_files = re.findall(r'^\+\+\+\s+(.+)$', block, flags=re.M)
-        for path in changed_files:
-            p = path.strip().replace('\\', '/')
-            if not any(p.startswith(allowed) for allowed in allowlist):
-                raise RuntimeError(f'Patch touches disallowed path: {p}')
-        tmp = tempfile.NamedTemporaryFile(delete=False, suffix='.patch', mode='w', encoding='utf-8', newline='\n')
-        try:
-            tmp.write(block)
-            tmp.close()
-            # Try standard apply; if corrupt, attempt with --reject to salvage partial hunks
+        for file_chunk in _split_per_file_diff(block):
+            cleaned = _clean_spurious_lines(file_chunk)
+            # Determine target path
+            m = re.search(r'^\+\+\+\s+b/(.*)$', cleaned, flags=re.M) or re.search(r'^\+\+\+\s+(.+)$', cleaned, flags=re.M)
+            target = (m.group(1).strip() if m else '')
+            p = target.replace('\\', '/')
+            if p and not any(p.startswith(allowed) for allowed in allowlist):
+                print(f"Skipping patch for disallowed path: {p}")
+                continue
+            tmp = tempfile.NamedTemporaryFile(delete=False, suffix='.patch', mode='w', encoding='utf-8', newline='\n')
             try:
-                run_cmd(['git', 'apply', '--whitespace=fix', tmp.name])
-            except RuntimeError:
+                tmp.write(cleaned)
+                tmp.close()
+                # Try standard apply; if corrupt, attempt with --reject to salvage partial hunks
                 try:
-                    run_cmd(['git', 'apply', '--reject', '--whitespace=fix', tmp.name])
-                except RuntimeError as e:
-                    # Include a small snippet of the failing block to aid debugging in CI logs
-                    snippet = '\n'.join(block.splitlines()[:40])
-                    raise RuntimeError(f"Git apply failed even with --reject. First lines of block:\n{snippet}\n\nOriginal error: {e}")
-        finally:
-            try:
-                os.unlink(tmp.name)
-            except FileNotFoundError:
-                pass
+                    run_cmd(['git', 'apply', '--whitespace=fix', tmp.name])
+                except RuntimeError:
+                    try:
+                        run_cmd(['git', 'apply', '--reject', '--whitespace=fix', tmp.name])
+                    except RuntimeError as e:
+                        snippet = '\n'.join(cleaned.splitlines()[:60])
+                        raise RuntimeError(f"Git apply failed even with --reject. First lines of block:\n{snippet}\n\nOriginal error: {e}")
+            finally:
+                try:
+                    os.unlink(tmp.name)
+                except FileNotFoundError:
+                    pass

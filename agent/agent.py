@@ -5,10 +5,11 @@ from agent.policies import MAX_RETRIES, MAX_CHANGED_LINES_DEFAULT
 
 REPO = pathlib.Path(__file__).resolve().parents[1]
 
-def read_allowed_files(ticket: dict) -> str:
+def read_allowed_files(ticket: dict, paths: list[str] | None = None) -> str:
     """Read current contents of allow-listed files to provide context to the LLM."""
     content_parts = []
-    for file_path in ticket.get('area_allowlist', []):
+    target_paths = paths if paths is not None else ticket.get('area_allowlist', [])
+    for file_path in target_paths:
         try:
             full_path = REPO / file_path
             if full_path.exists() and full_path.is_file():
@@ -48,9 +49,10 @@ def write_tests(ticket):
     return fname
 
 def implement_feature(ticket, failing_output=None):
-    file_context = read_allowed_files(ticket)
-    # Expand allowlist to include sanitized test filename variants to avoid mismatch
-    allowlist = list(ticket['area_allowlist'])
+    # Build a code-only allowlist (exclude tests; tests are generated separately)
+    allowlist = [p for p in ticket['area_allowlist'] if not p.startswith('tests/')]
+    file_context = read_allowed_files(ticket, paths=allowlist)
+    # Expand allowlist to include sanitized variants if needed (mostly for code paths)
     expanded = []
     for p in allowlist:
         if p.startswith('tests/') and '-' in p:
@@ -70,17 +72,10 @@ def implement_feature(ticket, failing_output=None):
     Here are the current contents of the files you are allowed to modify:
     {file_context}
 
-    Your task is to implement the feature. Prefer providing complete files using file blocks for robustness:
+    Your task is to implement the feature. Do NOT modify any files under tests/ in this step; tests are handled separately.
+    Output ONLY complete files using file blocks (no diffs, no prose, no extra text):
     ```file:relative/path/from/repo/root.py
     <entire file content here>
-    ```
-    If you only need small changes, you may alternatively provide a unified diff in a fenced block:
-    ```diff
-    --- a/path/to/file.py
-    +++ b/path/to/file.py
-    @@ -1,1 +1,1 @@
-    - old content
-    + new content
     ```
     Keep total changed lines under {max_lines}.
     Allowed paths: {allowlist}
