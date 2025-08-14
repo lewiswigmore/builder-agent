@@ -1,10 +1,12 @@
-import os, subprocess, yaml, re, tempfile, textwrap
+import os, subprocess, yaml, re, tempfile, textwrap, pathlib
 from typing import List
 from openai import AzureOpenAI
 
+REPO = pathlib.Path(__file__).resolve().parents[1]
+
 def run_cmd(cmd, check=True):
     print('+', ' '.join(cmd), flush=True)
-    res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd=str(REPO))
     if check and res.returncode != 0:
         raise RuntimeError(res.stdout.decode() + '\n' + res.stderr.decode())
     return res
@@ -41,8 +43,9 @@ def call_llm(prompt: str) -> str:
     system = (
         'You are a precise coding agent. Respond with only the requested artefact. '
         'When asked to write tests, output only valid pytest code in a single file. '
-        'When asked to implement code, output only unified diff patches wrapped in triple-fenced ```diff blocks. '
-        'Do not include explanations, extra code fences, or commentary.'
+        'When asked to implement code, prefer triple-fenced file blocks to provide complete files, like ```file:path/to/file.py```. '
+        'If using patches, output only unified diff patches wrapped in triple-fenced ```diff blocks. '
+        'Do not include explanations, extra fences, or commentary.'
     )
     client = _azure_client()
     create_kwargs = {
@@ -65,14 +68,29 @@ def call_llm(prompt: str) -> str:
     return out
 
 def apply_patches(patch_text: str, allowlist: List[str]):
-    """Parse and apply unified diff patches from LLM output.
+    """Apply changes from LLM output.
 
-    - Supports multiple ```diff fenced blocks.
-    - Falls back to raw unified diff if fences are missing.
-    - Enforces allowlist per changed file path.
-    - Applies each block separately for clearer errors.
+    Supports two formats, in priority order:
+    1) File blocks: ```file:relative/path\n<full file content>```
+    2) Unified diffs: ```diff\n--- a/path\n+++ b/path\n@@ ...``` (or raw unified diffs without fences)
     """
-    # 1) Extract diff blocks
+    # Prefer file blocks for robustness
+    file_blocks = re.findall(r"```file:([^\n\r]+)\s+\n(.*?)\n```", patch_text, flags=re.S)
+    if file_blocks:
+        for rel_path, content in file_blocks:
+            p = rel_path.strip().replace('\\', '/')
+            if not any(p.startswith(allowed) for allowed in allowlist):
+                raise RuntimeError(f'Patch touches disallowed path: {p}')
+            # Ensure directories exist
+            abs_path = (REPO / p).resolve()
+            os.makedirs(abs_path.parent, exist_ok=True)
+            # Normalize newlines to LF
+            normalized = content.replace('\r\n', '\n')
+            with open(abs_path, 'w', encoding='utf-8', newline='\n') as f:
+                f.write(normalized)
+        return
+
+    # Otherwise, handle unified diffs
     blocks = re.findall(r'```diff\n(.*?)\n```', patch_text, flags=re.S)
     if not blocks:
         # Fallback: look for raw diff markers
@@ -81,31 +99,29 @@ def apply_patches(patch_text: str, allowlist: List[str]):
         else:
             raise RuntimeError('No patch blocks produced by LLM')
 
-    # 2) Apply each block individually
     for raw in blocks:
-        block = raw.strip()
-        # Normalize line endings to LF to avoid CRLF issues on Windows runners
-        block = block.replace('\r\n', '\n')
-
-        # Collect files being changed from this block
+        block = raw.strip().replace('\r\n', '\n')
         changed_files = re.findall(r'^\+\+\+\s+b/(.*)$', block, flags=re.M)
         if not changed_files:
-            # Some diffs may use paths without a/ b/ prefixes; attempt a generic capture
             changed_files = re.findall(r'^\+\+\+\s+(.+)$', block, flags=re.M)
-
-        # Enforce allowlist
         for path in changed_files:
-            # Normalize to forward slashes
             p = path.strip().replace('\\', '/')
             if not any(p.startswith(allowed) for allowed in allowlist):
                 raise RuntimeError(f'Patch touches disallowed path: {p}')
-
-        # Write and apply
         tmp = tempfile.NamedTemporaryFile(delete=False, suffix='.patch', mode='w', encoding='utf-8', newline='\n')
         try:
             tmp.write(block)
             tmp.close()
-            run_cmd(['git', 'apply', '--whitespace=fix', tmp.name])
+            # Try standard apply; if corrupt, attempt with --reject to salvage partial hunks
+            try:
+                run_cmd(['git', 'apply', '--whitespace=fix', tmp.name])
+            except RuntimeError:
+                try:
+                    run_cmd(['git', 'apply', '--reject', '--whitespace=fix', tmp.name])
+                except RuntimeError as e:
+                    # Include a small snippet of the failing block to aid debugging in CI logs
+                    snippet = '\n'.join(block.splitlines()[:40])
+                    raise RuntimeError(f"Git apply failed even with --reject. First lines of block:\n{snippet}\n\nOriginal error: {e}")
         finally:
             try:
                 os.unlink(tmp.name)

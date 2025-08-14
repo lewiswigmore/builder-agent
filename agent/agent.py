@@ -70,9 +70,11 @@ def implement_feature(ticket, failing_output=None):
     Here are the current contents of the files you are allowed to modify:
     {file_context}
 
-    Your task is to generate a patch file to implement the feature.
-    Only suggest diffs as unified patches in fenced blocks.
-    Your response should only contain the patch, like this:
+    Your task is to implement the feature. Prefer providing complete files using file blocks for robustness:
+    ```file:relative/path/from/repo/root.py
+    <entire file content here>
+    ```
+    If you only need small changes, you may alternatively provide a unified diff in a fenced block:
     ```diff
     --- a/path/to/file.py
     +++ b/path/to/file.py
