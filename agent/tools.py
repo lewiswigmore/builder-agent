@@ -45,15 +45,22 @@ def call_llm(prompt: str) -> str:
         'Do not include explanations, extra code fences, or commentary.'
     )
     client = _azure_client()
-    resp = client.chat.completions.create(
-        model=deployment,
-        messages=[
+    create_kwargs = {
+        'model': deployment,
+        'messages': [
             {'role': 'system', 'content': system},
             {'role': 'user', 'content': prompt},
         ],
-    temperature=0.2,
-        max_completion_tokens=4096,
-    )
+        'max_completion_tokens': 4096,
+    }
+    # Only pass temperature if explicitly configured (some Azure deployments only support default)
+    temp_env = os.environ.get('AZURE_OPENAI_TEMPERATURE')
+    if temp_env:
+        try:
+            create_kwargs['temperature'] = float(temp_env)
+        except ValueError:
+            pass
+    resp = client.chat.completions.create(**create_kwargs)
     out = resp.choices[0].message.content or ''
     return out
 
