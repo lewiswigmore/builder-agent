@@ -51,7 +51,7 @@ def call_llm(prompt: str) -> str:
             {'role': 'system', 'content': system},
             {'role': 'user', 'content': prompt},
         ],
-        temperature=0.1,
+        temperature=1,
         max_completion_tokens=4096,
     )
     out = resp.choices[0].message.content or ''
