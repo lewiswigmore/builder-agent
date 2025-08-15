@@ -1,4 +1,4 @@
-name: Daily Feature Agent
+name: Daily Security Tool Builder
 on:
   schedule:
     # GitHub cron is UTC. 07:15 UTC ≈ 08:15 UK during BST.
@@ -10,7 +10,7 @@ permissions:
   pull-requests: write
 
 jobs:
-  run-agent:
+  build-security-tool:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -23,13 +23,14 @@ jobs:
 
       - name: Configure git identity
         run: |
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git config user.name 'security-builder[bot]'
+          git config user.email '41898282+security-builder[bot]@users.noreply.github.com'
 
-      - name: Install deps
+      - name: Install dependencies
         run: |
           pip install --upgrade pip
           pip install -r requirements.txt
+          pip install -e .
 
       # Extra safeguard: verify all env is present before running the agent
       - name: Validate Azure OpenAI config
@@ -40,17 +41,18 @@ jobs:
           AZURE_OPENAI_DEPLOYMENT: ${{ vars.AZURE_OPENAI_DEPLOYMENT }}
         run: |
           set -eu
+          echo "🔧 Security Tool Builder Configuration"
           echo "Endpoint: ${AZURE_OPENAI_ENDPOINT}"
-          echo "Deployment: ${AZURE_OPENAI_DEPLOYMENT}"
+          echo "Deployment: ${AZURE_OPENAI_DEPLOYMENT}" 
           echo "API version: ${AZURE_OPENAI_API_VERSION}"
           test -n "${AZURE_OPENAI_ENDPOINT}"
           test -n "${AZURE_OPENAI_DEPLOYMENT}"
           test -n "${AZURE_OPENAI_API_VERSION}"
           test -n "${AZURE_OPENAI_API_KEY}"
-          echo "Config present."
+          echo "✅ Configuration validated."
 
-      # Auto-grow the backlog with tiny tickets when it runs low
-      - name: Generate backlog if low
+      # Auto-generate security tool ideas when backlog is low  
+      - name: Generate security tool backlog if needed
         env:
           AZURE_OPENAI_ENDPOINT: ${{ vars.AZURE_OPENAI_ENDPOINT }}
           AZURE_OPENAI_API_KEY: ${{ secrets.AZURE_OPENAI_API_KEY }}
@@ -58,9 +60,11 @@ jobs:
           AZURE_OPENAI_DEPLOYMENT: ${{ vars.AZURE_OPENAI_DEPLOYMENT }}
           PYTHONPATH: .
         run: |
-          python scripts/generate_backlog.py --min-ready 1 --make 4
+          echo "🔍 Checking security tool backlog..."
+          # Only generate if we have fewer than 2 ready tools
+          python scripts/generate_backlog.py --min-ready 2 --make 3 --security-focus
 
-      - name: Run agent
+      - name: Build security tool
         env:
           AZURE_OPENAI_ENDPOINT: ${{ vars.AZURE_OPENAI_ENDPOINT }}
           AZURE_OPENAI_API_KEY: ${{ secrets.AZURE_OPENAI_API_KEY }}
@@ -69,4 +73,6 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}  # for gh cli
           PYTHONPATH: .
-        run: python -m agent.agent
+        run: |
+          echo "🛡️ Starting security tool builder..."
+          python -m agent.agent

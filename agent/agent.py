@@ -22,7 +22,7 @@ def read_allowed_files(ticket: dict, paths: list[str] | None = None) -> str:
 
 def _sanitize_ticket_id(ticket_id: str) -> str:
     """Create a filesystem- and import-friendly suffix for filenames from the ticket id.
-    e.g., FEAT-001 -> feat_001
+    e.g., RECON-001 -> recon_001
     """
     safe = ticket_id.lower().replace('-', '_')
     # strip any characters outside [a-z0-9_]
@@ -33,23 +33,47 @@ def write_tests(ticket):
     safe_id = _sanitize_ticket_id(ticket['id'])
     fname = (REPO / 'tests' / f"test_{safe_id}.py")
     fname.parent.mkdir(parents=True, exist_ok=True)
+    
+    # Get category for more specific test instructions
+    category = ticket.get('category', 'general')
+    security_reqs = ticket.get('security_requirements', [])
+    
     prompt = textwrap.dedent('''
-    Write deterministic pytest tests for this feature. Follow these rules strictly:
-    - Create exactly two tests named test_default_greeting and test_greet_flag.
-    - Use subprocess to execute the CLI as: [sys.executable, '-m', 'your_package'] (and append flags as needed).
-    - Assert exact stdout lines: 'Hello, world!' and 'Hello, Alice!'.
-    - Assert return code == 0 for both.
-    - Do NOT import the package under test directly; exercise via the module entrypoint.
-    - At the top of the file, include: 
-        import sys
-        import subprocess
-    - Do not include any other text or comments.
-    Context:
-    - Acceptance criteria:
+    Write comprehensive pytest tests for this security tool. Follow these rules strictly:
+    
+    SECURITY TOOL: {title}
+    CATEGORY: {category}
+    
+    Security Requirements:
+    {security_requirements}
+    
+    Acceptance Criteria:
     {criteria}
-    - Project layout uses 'src' layout at src/your_package/ with a module entrypoint implemented in __main__.py that should call your CLI.
-    Only output valid Python code for pytest in one file. No prose.
-    ''').format(criteria=json.dumps(ticket['acceptance_tests'], indent=2))
+    
+    Test Requirements:
+    - Create tests that validate security functionality without actually performing attacks
+    - Use mock data and controlled test environments
+    - Test error handling for invalid inputs
+    - Validate output formats and data structures
+    - Include edge case testing
+    - DO NOT perform actual network scans or attacks in tests
+    - Use localhost/127.0.0.1 for network-related tests only
+    - Mock external dependencies and network calls
+    
+    File Structure:
+    - The tool will be implemented as a Python module in: {tool_path}
+    - Import the tool module directly for testing
+    - Use subprocess only if testing CLI functionality
+    
+    Output only valid Python code for pytest. No prose or explanations.
+    ''').format(
+        title=ticket['title'],
+        category=category,
+        security_requirements='\n'.join(f"- {req}" for req in security_reqs),
+        criteria=json.dumps(ticket['acceptance_tests'], indent=2),
+        tool_path=ticket['area_allowlist'][0] if ticket['area_allowlist'] else 'tools/category/tool.py'
+    )
+    
     test_code = call_llm(prompt)
     fname.write_text(test_code, encoding='utf-8')
     return fname
@@ -57,42 +81,66 @@ def write_tests(ticket):
 def implement_feature(ticket, failing_output=None):
     # Build a code-only allowlist (exclude tests; tests are generated separately)
     allowlist = [p for p in ticket['area_allowlist'] if not p.startswith('tests/')]
-    # If cli.py is allowed, allow __main__.py too (models often add module entrypoints)
-    if 'src/your_package/cli.py' in allowlist and 'src/your_package/__main__.py' not in allowlist:
-        allowlist.append('src/your_package/__main__.py')
+    
+    # Ensure directory structure exists for tools
+    for path in allowlist:
+        full_path = REPO / path
+        full_path.parent.mkdir(parents=True, exist_ok=True)
+        # Create __init__.py files for Python packages
+        if 'tools/' in path and not full_path.parent.joinpath('__init__.py').exists():
+            full_path.parent.joinpath('__init__.py').write_text('', encoding='utf-8')
+    
     file_context = read_allowed_files(ticket, paths=allowlist)
-    # Expand allowlist to include sanitized variants if needed (mostly for code paths)
-    expanded = []
-    for p in allowlist:
-        if p.startswith('tests/') and '-' in p:
-            expanded.append(p.replace('-', '_'))
-    allowlist += [p for p in expanded if p not in allowlist]
+    category = ticket.get('category', 'general')
+    security_reqs = ticket.get('security_requirements', [])
+    
     prompt = textwrap.dedent('''
-    You are a senior software engineer. Implement the feature below by generating a patch in the unified diff format.
-
-    Feature: {title}
-
-    Description:
-    {desc}
-
-    Acceptance criteria:
+    You are a senior security engineer and ethical hacker. Implement the security tool below.
+    
+    SECURITY TOOL: {title}
+    CATEGORY: {category}
+    
+    Description: {desc}
+    
+    Security Requirements:
+    {security_requirements}
+    
+    Acceptance Criteria:
     {criteria}
-
-    Here are the current contents of the files you are allowed to modify:
+    
+    IMPORTANT SECURITY GUIDELINES:
+    - This tool is for AUTHORIZED TESTING ONLY
+    - Include ethical use warnings in docstrings
+    - Add rate limiting and respectful scanning practices
+    - Implement proper error handling and logging
+    - Follow security best practices for credential handling
+    - Include usage examples in docstrings
+    - Make the tool modular and well-documented
+    
+    Current file contents:
     {file_context}
-
-    Your task is to implement the feature. Do NOT modify any files under tests/ in this step; tests are handled separately.
-    You MUST output at least one file block. If no changes are required to an allowed file, re-output the file unchanged.
-    Output ONLY complete files using file blocks (no diffs, no prose, no extra text):
+    
+    Generate complete, production-ready Python files. Each file must:
+    - Have proper imports and dependencies
+    - Include comprehensive docstrings
+    - Handle command-line arguments using argparse
+    - Implement proper error handling
+    - Include security warnings and ethical use guidelines
+    - Be self-contained and executable
+    
+    Output ONLY complete files using file blocks:
     ```file:relative/path/from/repo/root.py
     <entire file content here>
     ```
+    
     Keep total changed lines under {max_lines}.
     Allowed paths: {allowlist}
     {failing}
     ''').format(
         title=ticket['title'],
+        category=category,
         desc=ticket['description'],
+        security_requirements='\n'.join(f"- {req}" for req in security_reqs),
         criteria=json.dumps(ticket['acceptance_tests'], indent=2),
         max_lines=ticket.get('max_changed_lines', MAX_CHANGED_LINES_DEFAULT),
         allowlist=allowlist,
@@ -115,23 +163,25 @@ def run_tests():
     return run_cmd(['pytest', '-q'], check=False)
 
 def main():
-    backlog = read_backlog(REPO / 'backlog' / 'features.yml')
+    backlog = read_backlog(REPO / 'backlog' / 'security_tools.yml')
     ticket = pick_next_ticket(backlog)
     if not ticket:
-        print('No ready tickets.')
+        print('No ready security tools.')
         return 0
-    # Ensure Python can resolve the 'src' layout for both pytest and any subprocesses spawned by tests
-    src_path = str(REPO / 'src')
+    
+    # Ensure Python can resolve the 'tools' directory for imports
+    tools_path = str(REPO / 'tools')
     existing = os.environ.get('PYTHONPATH', '')
-    if src_path not in existing.split(os.pathsep):
-        os.environ['PYTHONPATH'] = (src_path + (os.pathsep + existing if existing else ''))
-    branch = f"feat/{ticket['id'].lower()}"
+    if tools_path not in existing.split(os.pathsep):
+        os.environ['PYTHONPATH'] = (tools_path + (os.pathsep + existing if existing else ''))
+    
+    branch = f"security-tool/{ticket['id'].lower()}"
     git('checkout', '-B', branch)
 
     # 1) Generate tests
     test_file = write_tests(ticket)
     git('add', str(test_file))
-    git('commit', '-m', f"test({ticket['id']}): add acceptance tests")
+    git('commit', '-m', f"test({ticket['id']}): add security tool tests for {ticket['title']}")
 
     # 2) Implement + retry loop
     attempt, failing_output = 0, None
@@ -142,11 +192,11 @@ def main():
         except Exception as e:
             # Capture error and retry with the failing output to guide the next attempt
             err = f"{type(e).__name__}: {e}"
-            print('Patch application failed:', err)
-            failing_output = (failing_output or '') + "\n\nPatch application failed:\n" + err
+            print('Security tool implementation failed:', err)
+            failing_output = (failing_output or '') + "\n\nImplementation failed:\n" + err
             continue
         git('add', '-A')
-        git('commit', '-m', f"feat({ticket['id']}): {ticket['title']} (attempt {attempt})", allow_empty=True)
+        git('commit', '-m', f"feat({ticket['id']}): implement {ticket['title']} (attempt {attempt})", allow_empty=True)
         res = run_tests()
         if res.returncode == 0:
             append_changelog(ticket)
@@ -154,17 +204,27 @@ def main():
             git('commit', '-m', f"docs({ticket['id']}): update changelog")
             from scripts.open_pr import ensure_pr, merge_pr
             pr_url = ensure_pr(ticket, branch)
-            # Merge immediately since we just ran tests locally. If branch protection requires external checks,
-            # set auto_on_checks=True instead.
-            merge_pr(branch, method='squash', delete_branch=True, auto_on_checks=False)
-            print(f"Opened and merged PR: {pr_url}")
+            # Create PR but don't auto-merge security tools - they need review
+            print(f"Security tool PR created for review: {pr_url}")
             return 0
         failing_output = res.stdout.decode() + "\n" + res.stderr.decode()
         print('Tests failing, retrying...')
 
     from scripts.open_pr import ensure_pr
-    pr_url = ensure_pr(ticket, branch, draft=True, body_suffix="\n\n⚠️ Out of auto-fix retries. Needs review.")
-    print(f"WIP PR opened: {pr_url}")
+    pr_body = f"""
+    🛡️ **Security Tool Implementation**
+    
+    **Category**: {ticket.get('category', 'general')}
+    
+    **Security Requirements**:
+    {chr(10).join('- ' + req for req in ticket.get('security_requirements', []))}
+    
+    ⚠️ **SECURITY REVIEW REQUIRED** - This tool requires security review before merging.
+    
+    ⚠️ Out of auto-fix retries. Manual review needed.
+    """
+    pr_url = ensure_pr(ticket, branch, draft=True, body_suffix=pr_body)
+    print(f"Draft security tool PR opened for review: {pr_url}")
     return 1
 
 if __name__ == '__main__':

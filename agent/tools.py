@@ -22,7 +22,9 @@ def read_backlog(path):
         return yaml.safe_load(f)
 
 def pick_next_ticket(backlog):
-    for item in backlog.get('features', []):
+    # Support both old 'features' and new 'security_tools' format
+    items = backlog.get('security_tools', []) or backlog.get('features', [])
+    for item in items:
         if item.get('ready') and item.get('status') == 'todo':
             return item
     return None
