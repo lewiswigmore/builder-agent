@@ -39,33 +39,22 @@ def write_tests(ticket):
     security_reqs = ticket.get('security_requirements', [])
     
     prompt = textwrap.dedent('''
-    Write comprehensive pytest tests for this security tool. Follow these rules strictly:
+    Write pytest tests for security tool:
     
-    SECURITY TOOL: {title}
+    TOOL: {title}
     CATEGORY: {category}
     
-    Security Requirements:
-    {security_requirements}
+    REQUIREMENTS: {security_requirements}
     
-    Acceptance Criteria:
-    {criteria}
+    ACCEPTANCE TESTS: {criteria}
     
-    Test Requirements:
-    - Create tests that validate security functionality without actually performing attacks
-    - Use mock data and controlled test environments
-    - Test error handling for invalid inputs
-    - Validate output formats and data structures
-    - Include edge case testing
-    - DO NOT perform actual network scans or attacks in tests
-    - Use localhost/127.0.0.1 for network-related tests only
-    - Mock external dependencies and network calls
+    TEST RULES:
+    - Mock external calls, no actual attacks
+    - Use localhost/127.0.0.1 only for network tests  
+    - Test error handling and edge cases
+    - Import from: {tool_path}
     
-    File Structure:
-    - The tool will be implemented as a Python module in: {tool_path}
-    - Import the tool module directly for testing
-    - Use subprocess only if testing CLI functionality
-    
-    Output only valid Python code for pytest. No prose or explanations.
+    Output only pytest code, no explanations.
     ''').format(
         title=ticket['title'],
         category=category,
@@ -95,58 +84,28 @@ def implement_feature(ticket, failing_output=None):
     security_reqs = ticket.get('security_requirements', [])
     
     prompt = textwrap.dedent('''
-    You are a senior security engineer and ethical hacker. Implement the security tool below.
+    You are a senior security engineer. Implement this security tool:
     
-    SECURITY TOOL: {title}
+    TOOL: {title}
     CATEGORY: {category}
+    DESCRIPTION: {desc}
     
-    Description: {desc}
-    
-    Security Requirements:
+    REQUIREMENTS:
     {security_requirements}
     
-    Acceptance Criteria:
+    ACCEPTANCE TESTS:
     {criteria}
     
-    IMPORTANT SECURITY GUIDELINES:
-    - This tool is for AUTHORIZED TESTING ONLY
-    - Include ethical use warnings in docstrings
-    - Add rate limiting and respectful scanning practices
-    - Implement proper error handling and logging
-    - Follow security best practices for credential handling
-    - Include usage examples in docstrings
-    - Make the tool modular and well-documented
+    GUIDELINES: Authorized testing only, include ethical warnings, proper error handling.
     
-    Current file contents:
-    {file_context}
+    FILES: {file_context}
     
-    Generate complete, production-ready Python files. Each file must:
-    - Have proper imports and dependencies
-    - Include comprehensive docstrings
-    - Handle command-line arguments using argparse
-    - Implement proper error handling
-    - Include security warnings and ethical use guidelines
-    - Be self-contained and executable
-    
-    Output ONLY complete files using this EXACT format:
-    ```file:relative/path/from/repo/root.py
-    <entire file content here>
+    Output complete Python files using EXACT format:
+    ```file:relative/path.py
+    complete file content here
     ```
     
-    CRITICAL: The response must contain ONLY file blocks in the exact format shown above.
-    Do not include any explanatory text outside the file blocks.
-    Each file must be complete and self-contained.
-    
-    Example:
-    ```file:tools/recon/port_scanner.py
-    #!/usr/bin/env python3
-    """Port scanner implementation."""
-    import socket
-    # ... rest of file
-    ```
-    
-    Keep total changed lines under {max_lines}.
-    Allowed paths: {allowlist}
+    Max lines: {max_lines}. Paths: {allowlist}
     {failing}
     ''').format(
         title=ticket['title'],

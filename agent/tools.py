@@ -55,7 +55,7 @@ def call_llm(prompt: str) -> str:
             {'role': 'system', 'content': system},
             {'role': 'user', 'content': prompt},
         ],
-        'max_completion_tokens': 4096,
+        'max_completion_tokens': 8192,  # Increased for GPT-5 reasoning + response
     }
     # Only pass temperature if explicitly configured (some Azure deployments only support default)
     temp_env = os.environ.get('AZURE_OPENAI_TEMPERATURE')
