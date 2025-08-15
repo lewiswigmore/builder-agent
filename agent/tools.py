@@ -66,6 +66,14 @@ def call_llm(prompt: str) -> str:
             pass
     resp = client.chat.completions.create(**create_kwargs)
     out = resp.choices[0].message.content or ''
+    
+    # Debug logging for empty responses
+    if not out.strip():
+        print(f"WARNING: Empty LLM response for deployment: {deployment}")
+        print(f"Response object: {resp}")
+        print(f"Message content: {repr(resp.choices[0].message.content)}")
+        print(f"Finish reason: {resp.choices[0].finish_reason}")
+    
     return out
 
 def apply_patches(patch_text: str, allowlist: List[str]):
@@ -185,8 +193,14 @@ def apply_patches(patch_text: str, allowlist: List[str]):
             blocks = [cleaned]
         else:
             # Enhanced error message with debug info
-            debug_preview = patch_text[:500] + ('...' if len(patch_text) > 500 else '')
-            raise RuntimeError(f'No patch blocks produced by LLM. Response preview:\n{debug_preview}')
+            debug_preview = patch_text[:1000] + ('...' if len(patch_text) > 1000 else '')
+            debug_info = (
+                f"Response length: {len(patch_text)}\n"
+                f"Contains backticks: {'```' in patch_text}\n"
+                f"Contains 'file:': {'file:' in patch_text.lower()}\n"
+                f"Response preview:\n{debug_preview}"
+            )
+            raise RuntimeError(f'No patch blocks produced by LLM. Debug info:\n{debug_info}')
 
     def _sanitize_diff_block(text: str) -> str:
         # Remove any stray code fence lines
