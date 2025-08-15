@@ -222,6 +222,9 @@ def _run_udp_scan(scanner, host, ports, rate_limit=None):
 
 
 def _export_json(scanner, results):
+    # Handle ScanResult object with to_json method
+    if hasattr(results, 'to_json'):
+        return results.to_json()
     if hasattr(scanner, "export_results"):
         return scanner.export_results("json", results)
     if hasattr(scanner, "to_json"):
@@ -232,6 +235,9 @@ def _export_json(scanner, results):
 
 
 def _export_xml(scanner, results):
+    # Handle ScanResult object with to_xml method  
+    if hasattr(results, 'to_xml'):
+        return results.to_xml()
     if hasattr(scanner, "export_results"):
         return scanner.export_results("xml", results)
     if hasattr(scanner, "to_xml"):
@@ -242,6 +248,9 @@ def _export_xml(scanner, results):
 
 
 def _export_csv(scanner, results):
+    # Handle ScanResult object with to_csv method
+    if hasattr(results, 'to_csv'):
+        return results.to_csv()
     if hasattr(scanner, "export_results"):
         return scanner.export_results("csv", results)
     if hasattr(scanner, "to_csv"):
@@ -253,10 +262,13 @@ def _export_csv(scanner, results):
 
 def _as_list_of_dicts(results):
     # Normalize results to list of dicts
+    # Handle ScanResult object
+    if hasattr(results, 'results') and isinstance(results.results, list):
+        return [vars(r) if hasattr(r, '__dict__') else r for r in results.results]
     if isinstance(results, dict) and "results" in results:
         return results["results"]
     if isinstance(results, list):
-        return results
+        return [vars(r) if hasattr(r, '__dict__') else r for r in results]
     # Some scanners might return generator
     if isinstance(results, types.GeneratorType):
         return list(results)
