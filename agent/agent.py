@@ -128,9 +128,21 @@ def implement_feature(ticket, failing_output=None):
     - Include security warnings and ethical use guidelines
     - Be self-contained and executable
     
-    Output ONLY complete files using file blocks:
+    Output ONLY complete files using this EXACT format:
     ```file:relative/path/from/repo/root.py
     <entire file content here>
+    ```
+    
+    CRITICAL: The response must contain ONLY file blocks in the exact format shown above.
+    Do not include any explanatory text outside the file blocks.
+    Each file must be complete and self-contained.
+    
+    Example:
+    ```file:tools/recon/port_scanner.py
+    #!/usr/bin/env python3
+    """Port scanner implementation."""
+    import socket
+    # ... rest of file
     ```
     
     Keep total changed lines under {max_lines}.

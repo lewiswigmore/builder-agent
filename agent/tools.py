@@ -78,21 +78,33 @@ def apply_patches(patch_text: str, allowlist: List[str]):
     # Normalize newlines across entire output
     patch_text = patch_text.replace('\r\n', '\n').replace('\r', '\n')
 
-    # Prefer file blocks for robustness (strict format)
-    file_blocks = re.findall(r"```file:[ \t]*([^\n\r]+)\n(.*?)\n```", patch_text, flags=re.S)
-    if file_blocks:
-        for rel_path, content in file_blocks:
-            p = rel_path.strip().replace('\\', '/')
-            if not any(p.startswith(allowed) for allowed in allowlist):
-                raise RuntimeError(f'Patch touches disallowed path: {p}')
-            # Ensure directories exist
-            abs_path = (REPO / p).resolve()
-            os.makedirs(abs_path.parent, exist_ok=True)
-            # Normalize newlines to LF
-            normalized = content.replace('\r\n', '\n')
-            with open(abs_path, 'w', encoding='utf-8', newline='\n') as f:
-                f.write(normalized)
-        return
+    # Try all possible file block patterns
+    patterns = [
+        # Original strict format
+        r"```file:[ \t]*([^\n\r]+)\n(.*?)\n```",
+        # Flexible format with language hint
+        r"```(?:python|py)?[ \t]*\n[ \t]*(?:#[ \t]*)?file:[ \t]*([^\n\r]+)\n(.*?)\n```",
+        # Simple python code blocks that might contain file content
+        r"```python\n(.*?)\n```",
+        r"```py\n(.*?)\n```",
+        r"```\n(.*?)\n```"
+    ]
+    
+    for pattern in patterns[:2]:  # Try file-specific patterns first
+        file_blocks = re.findall(pattern, patch_text, flags=re.S | re.I)
+        if file_blocks:
+            for rel_path, content in file_blocks:
+                p = rel_path.strip().replace('\\', '/')
+                if not any(p.startswith(allowed) for allowed in allowlist):
+                    raise RuntimeError(f'Patch touches disallowed path: {p}')
+                # Ensure directories exist
+                abs_path = (REPO / p).resolve()
+                os.makedirs(abs_path.parent, exist_ok=True)
+                # Normalize newlines to LF
+                normalized = content.replace('\r\n', '\n')
+                with open(abs_path, 'w', encoding='utf-8', newline='\n') as f:
+                    f.write(normalized)
+            return
 
     # Tolerant file block parsing: any fenced code block whose first non-empty line is 'file: path'
     tolerant_blocks = re.findall(r"```[a-zA-Z0-9_-]*\n(.*?)\n```", patch_text, flags=re.S)
@@ -127,18 +139,24 @@ def apply_patches(patch_text: str, allowlist: List[str]):
     # Heuristic fallback: if exactly one code file is allowed to change, and we see any fenced code block,
     # assume it is the full content for that file.
     code_allowlist = [p for p in allowlist if not p.startswith('tests/')]
-    if len(code_allowlist) == 1 and tolerant_blocks:
-        p = code_allowlist[0]
-        abs_path = (REPO / p).resolve()
-        os.makedirs(abs_path.parent, exist_ok=True)
-        # Use the first code block content as the file content, stripping a leading "# file: ..." line if present
-        content = tolerant_blocks[0].replace('\r\n', '\n').strip('\n')
-        first_line = content.split('\n', 1)[0] if '\n' in content else content
-        if re.match(r"\s*(?:#\s*)?file:\s*", first_line, flags=re.I):
-            content = '\n'.join(content.split('\n')[1:])
-        with open(abs_path, 'w', encoding='utf-8', newline='\n') as f:
-            f.write(content)
-        return
+    if len(code_allowlist) == 1:
+        # Try generic code block patterns
+        for pattern in patterns[2:]:  # Generic code block patterns
+            blocks = re.findall(pattern, patch_text, flags=re.S)
+            if blocks:
+                p = code_allowlist[0]
+                abs_path = (REPO / p).resolve()
+                os.makedirs(abs_path.parent, exist_ok=True)
+                # Use the first/largest code block as the file content
+                content = max(blocks, key=len) if len(blocks) > 1 else blocks[0]
+                # Clean up any file: markers at the start
+                lines = content.split('\n')
+                if lines and re.match(r'\s*(?:#\s*)?file:\s*', lines[0], re.I):
+                    content = '\n'.join(lines[1:])
+                content = content.replace('\r\n', '\n').strip('\n')
+                with open(abs_path, 'w', encoding='utf-8', newline='\n') as f:
+                    f.write(content)
+                return
 
     # Unfenced 'file: path' format anywhere in the text
     m = re.search(r"(?ims)^\s*file:\s*([^\n\r]+)\s*[\r\n]+(.*)$", patch_text)
@@ -166,7 +184,9 @@ def apply_patches(patch_text: str, allowlist: List[str]):
         if ('--- a/' in cleaned and '+++ b/' in cleaned) or ('--- ' in cleaned and '+++ ' in cleaned):
             blocks = [cleaned]
         else:
-            raise RuntimeError('No patch blocks produced by LLM')
+            # Enhanced error message with debug info
+            debug_preview = patch_text[:500] + ('...' if len(patch_text) > 500 else '')
+            raise RuntimeError(f'No patch blocks produced by LLM. Response preview:\n{debug_preview}')
 
     def _sanitize_diff_block(text: str) -> str:
         # Remove any stray code fence lines
