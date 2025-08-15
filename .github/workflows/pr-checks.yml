@@ -21,11 +21,10 @@ jobs:
         run: |
           pip install --upgrade pip
           pip install -r requirements.txt
+          pip install -e .
 
       # Ensure imports like `from your_package import ...` work without packaging
       - name: Run pytest (tolerate no tests)
-        env:
-          PYTHONPATH: .
         run: |
           set -o pipefail
           pytest -q || rc=$?
