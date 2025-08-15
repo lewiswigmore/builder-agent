@@ -151,7 +151,6 @@ class TokenBucket:
                 if self._tokens >= 1:
                     self._tokens -= 1
                     return
-                # Need to wait for next token
                 needed = 1 - self._tokens
                 sleep_time = max(0.001, needed / self.rate)
             time.sleep(sleep_time)
@@ -161,7 +160,6 @@ def _default_service_for_port(port: int, proto: str) -> Optional[str]:
     try:
         return socket.getservbyport(port, proto)
     except OSError:
-        # simple common mapping fallbacks
         if proto == "tcp":
             return {
                 22: "ssh",
@@ -206,7 +204,6 @@ def _parse_banner(port: int, proto: str, data: Optional[bytes]) -> Tuple[Optiona
     service = None
     if "ssh-" in text_l:
         service = "ssh"
-        # e.g., SSH-2.0-OpenSSH_8.9p1 Ubuntu-3
         product = text.strip().split()[0] if text else None
     elif "smtp" in text_l or text_l.startswith("220"):
         service = "smtp"
@@ -265,7 +262,6 @@ class PortScanner:
             - rst_close: attempt to close with RST (reduced footprint).
             - syn: SYN scan (requires root) - not implemented; falls back to 'connect'.
         """
-        # Resolve target with alias support
         if target is None and host:
             target = host
         if target is None:
@@ -273,7 +269,6 @@ class PortScanner:
         self._validate_host(target)
         self.target = target
 
-        # Ports default and validation
         if ports is None:
             ports_list = common_ports(1, 1000)
         else:
@@ -291,14 +286,12 @@ class PortScanner:
         self.randomize = bool(randomize)
         self.stealth_mode = stealth_mode
 
-        # Rate limit handling
         self._rate_limit = float(rate_limit) if rate_limit is not None else 200.0
         self._bucket = TokenBucket(rate_per_sec=self._rate_limit, capacity=int(max(1, self._rate_limit)))
         self._results_lock = threading.Lock()
 
     @staticmethod
     def _validate_host(host: str) -> None:
-        # Prefer IPv4 for compatibility; raise ValueError if cannot resolve
         try:
             socket.getaddrinfo(host, None, family=socket.AF_INET)
         except socket.gaierror as e:
@@ -313,42 +306,130 @@ class PortScanner:
         new_val = float(value) if value is not None else 200.0
         new_val = max(0.01, new_val)
         self._rate_limit = new_val
-        # Update token bucket if already created
         if hasattr(self, "_bucket") and isinstance(self._bucket, TokenBucket):
             self._bucket.rate = new_val
             self._bucket.capacity = int(max(1, new_val))
 
-    def scan(self) -> ScanResult:
-        started = _now()
-        if self.randomize:
-            random.shuffle(self.ports)
+    def scan(
+        self,
+        host: Optional[str] = None,
+        ports: Optional[Iterable[int]] = None,
+        protocols: Optional[Iterable[str]] = None,
+        rate_limit: Optional[float] = None,
+        stealth: Optional[object] = None,
+    ) -> ScanResult:
+        """
+        Perform a scan with optional overrides:
+        - host: target hostname/IP
+        - ports: iterable of port numbers
+        - protocols: iterable including 'tcp' and/or 'udp'
+        - rate_limit: tokens per second
+        - stealth: bool (True -> rst_close, False -> connect) or string mode
+        """
+        # Back up current state
+        orig_target = self.target
+        orig_ports = self.ports[:]
+        orig_tcp, orig_udp = self.tcp, self.udp
+        orig_stealth = self.stealth_mode
+        orig_bucket = self._bucket
+        orig_rate = self._rate_limit
 
-        futures = []
-        results: List[PortResult] = []
-        notes: List[str] = [
-            "Ethical use only: scan with permission.",
-            f"Stealth mode: {self.stealth_mode}",
-            f"Rate limit: {self._bucket.rate} per second",
-        ]
-        with ThreadPoolExecutor(max_workers=self.threads) as executor:
-            for p in self.ports:
-                if self.tcp:
-                    futures.append(executor.submit(self._scan_tcp, p))
-                if self.udp:
-                    futures.append(executor.submit(self._scan_udp, p))
+        try:
+            # Host override
+            if host is not None:
+                self._validate_host(host)
+                self.target = host
 
-            for fut in as_completed(futures):
-                r = fut.result()
-                if isinstance(r, list):
-                    items = r
+            # Ports override with validation
+            if ports is not None:
+                try:
+                    ports_list = list(set(int(p) for p in ports if isinstance(p, (int, str))))
+                    ports_list = [int(p) for p in ports_list if 0 < int(p) <= 65535]
+                except Exception as e:
+                    raise ValueError("Invalid ports iterable") from e
+                if not ports_list:
+                    raise ValueError("No valid ports provided (must be 1-65535).")
+                self.ports = ports_list
+
+            # Protocols override
+            if protocols is not None:
+                if isinstance(protocols, (str, bytes)):
+                    protos = {str(protocols).lower()}
                 else:
-                    items = [r]
-                with self._results_lock:
-                    results.extend(items)
+                    protos = {str(p).lower() for p in protocols}
+                self.tcp = "tcp" in protos
+                self.udp = "udp" in protos
+                if not (self.tcp or self.udp):
+                    raise ValueError("No valid protocols selected. Use 'tcp' and/or 'udp'.")
 
-        ended = _now()
-        sr = ScanResult(self.target, started, ended, results, notes)
-        return sr
+            # Stealth override
+            if stealth is not None:
+                if isinstance(stealth, bool):
+                    self.stealth_mode = "rst_close" if stealth else "connect"
+                elif isinstance(stealth, str):
+                    self.stealth_mode = stealth
+                else:
+                    raise ValueError("Invalid stealth parameter; use bool or string mode")
+
+            # Rate limit override
+            if rate_limit is not None:
+                rl = max(0.01, float(rate_limit))
+                self._rate_limit = rl
+                self._bucket = TokenBucket(rate_per_sec=rl, capacity=int(max(1, rl)))
+
+            started = _now()
+            ports_to_scan = self.ports[:]
+            if self.randomize:
+                random.shuffle(ports_to_scan)
+
+            futures = []
+            results: List[PortResult] = []
+            notes: List[str] = [
+                "Ethical use only: scan with permission.",
+                f"Stealth mode: {self.stealth_mode}",
+                f"Rate limit: {self._bucket.rate} per second",
+            ]
+            with ThreadPoolExecutor(max_workers=self.threads) as executor:
+                for p in ports_to_scan:
+                    if self.tcp:
+                        futures.append(executor.submit(self._scan_tcp, p))
+                    if self.udp:
+                        futures.append(executor.submit(self._scan_udp, p))
+
+                for fut in as_completed(futures):
+                    r = fut.result()
+                    items = r if isinstance(r, list) else [r]
+                    with self._results_lock:
+                        results.extend(items)
+
+            ended = _now()
+            sr = ScanResult(self.target, started, ended, results, notes)
+            return sr
+        finally:
+            # Restore original state
+            self.target = orig_target
+            self.ports = orig_ports
+            self.tcp, self.udp = orig_tcp, orig_udp
+            self.stealth_mode = orig_stealth
+            self._bucket = orig_bucket
+            self._rate_limit = orig_rate
+
+    def scan_tcp(
+        self,
+        host: Optional[str] = None,
+        ports: Optional[Iterable[int]] = None,
+        rate_limit: Optional[float] = None,
+        stealth: Optional[object] = None,
+    ) -> ScanResult:
+        return self.scan(host=host, ports=ports, protocols=["tcp"], rate_limit=rate_limit, stealth=stealth)
+
+    def scan_udp(
+        self,
+        host: Optional[str] = None,
+        ports: Optional[Iterable[int]] = None,
+        rate_limit: Optional[float] = None,
+    ) -> ScanResult:
+        return self.scan(host=host, ports=ports, protocols=["udp"], rate_limit=rate_limit)
 
     def _apply_jitter(self):
         if self.jitter and (self.jitter[1] > 0):
@@ -360,7 +441,6 @@ class PortScanner:
                 time.sleep(d)
 
     def _rst_close(self, sock: socket.socket):
-        # Try to force RST by setting SO_LINGER with 0 timeout.
         try:
             linger = struct.pack("ii", 1, 0)
             sock.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, linger)
@@ -382,12 +462,10 @@ class PortScanner:
         product = None
         error = None
 
-        # Only 'connect' and 'rst_close' implemented; 'syn' falls back.
         s = None
         try:
             s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             s.settimeout(self.timeout)
-            # Set TCP_NODELAY for snappier behavior
             try:
                 s.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
             except Exception:
@@ -395,10 +473,8 @@ class PortScanner:
             s.connect((self.target, port))
             state = "open"
             reason = "tcp-connect"
-            # Try banner grabbing based on common ports
             banner_data = self._grab_tcp_banner(s, port, service_guess)
             if not banner_data:
-                # Passive read if server sends first (e.g., SSH/FTP/SMTP)
                 try:
                     s.settimeout(0.8)
                     data = s.recv(4096)
@@ -406,7 +482,6 @@ class PortScanner:
                         banner_data = data
                 except Exception:
                     pass
-            # Close socket considering stealth mode
             if self.stealth_mode == "rst_close":
                 self._rst_close(s)
                 s = None
@@ -540,7 +615,6 @@ class PortScanner:
                         except Exception:
                             banner_text = repr(data[:64])
             except socket.timeout:
-                # no response
                 pass
             except ConnectionRefusedError as e:
                 state = "closed"
@@ -572,24 +646,19 @@ class PortScanner:
     def _udp_payload_for_port(self, port: int, service: Optional[str]) -> bytes:
         # Very minimal payloads to elicit responses
         if port == 53 or service == "domain":
-            # Minimal DNS query (transaction id 0x1337)
             try:
-                # Header: id, flags, qdcount, ancount, nscount, arcount
                 header = struct.pack(">HHHHHH", 0x1337, 0x0100, 1, 0, 0, 0)
-                qname = b"\x01a\x01i\x01o\x00"  # a.i.o
-                question = qname + struct.pack(">HH", 1, 1)  # A IN
+                qname = b"\x01a\x01i\x01o\x00"
+                question = qname + struct.pack(">HH", 1, 1)
                 return header + question
             except Exception:
                 return b"\x00" * 12
         if port == 123 or service == "ntp":
-            # Minimal NTP request
             return b"\x1b" + b"\0" * 47
         if port in (161,) or service == "snmp":
-            # Simple SNMP get (community 'public') to 1.3.6.1.2.1.1.1.0
             return bytes.fromhex(
                 "30819f020103301002010004067075626c6963a2818b020100020100300f300d06092b060102010101000500301d301b06092b06010201010100020101300e0400000400a003020100a10f020100020100300a300806062b06010201010500"
             )
-        # Default: empty or single null byte
         return b"\x00"
 
 
