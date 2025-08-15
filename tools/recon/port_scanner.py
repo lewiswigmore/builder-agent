@@ -237,25 +237,26 @@ def _parse_banner(port: int, proto: str, data: Optional[bytes]) -> Tuple[Optiona
 class PortScanner:
     def __init__(
         self,
-        target: str,
-        ports: Iterable[int],
+        target: Optional[str] = None,
+        ports: Optional[Iterable[int]] = None,
         tcp: bool = True,
         udp: bool = False,
         threads: int = 100,
-        rate_limit: float = 200.0,
+        rate_limit: Optional[float] = None,
         timeout: float = 2.0,
         jitter: Tuple[float, float] = (0.0, 0.05),
         randomize: bool = True,
-        stealth_mode: str = "connect",  # connect | rst_close | syn
+        stealth_mode: str = "connect",  # connect | rst_close | syn (fallback to connect)
+        host: Optional[str] = None,  # alias for target
     ):
         """
         Create a PortScanner.
 
-        - target: hostname or IP to scan.
-        - ports: iterable of port numbers.
+        - target: hostname or IP to scan. Defaults to 127.0.0.1 if not provided.
+        - ports: iterable of port numbers. Defaults to common ports 1-1000.
         - tcp/udp: enable protocols.
         - threads: number of worker threads.
-        - rate_limit: max probes per second (global).
+        - rate_limit: max probes per second (global). Defaults to 200/sec.
         - timeout: per-connection timeout in seconds.
         - jitter: tuple(min,max) random sleep before each probe.
         - randomize: randomize port order.
@@ -264,17 +265,58 @@ class PortScanner:
             - rst_close: attempt to close with RST (reduced footprint).
             - syn: SYN scan (requires root) - not implemented; falls back to 'connect'.
         """
+        # Resolve target with alias support
+        if target is None and host:
+            target = host
+        if target is None:
+            target = "127.0.0.1"
+        self._validate_host(target)
         self.target = target
-        self.ports = list(set(int(p) for p in ports if 0 < int(p) <= 65535))
-        self.tcp = tcp
-        self.udp = udp
+
+        # Ports default and validation
+        if ports is None:
+            ports_list = common_ports(1, 1000)
+        else:
+            ports_list = list(set(int(p) for p in ports if isinstance(p, (int, str))))
+            ports_list = [int(p) for p in ports_list if 0 < int(p) <= 65535]
+            if not ports_list:
+                raise ValueError("No valid ports provided (must be 1-65535).")
+        self.ports = ports_list
+
+        self.tcp = bool(tcp)
+        self.udp = bool(udp)
         self.threads = max(1, int(threads))
         self.timeout = float(timeout)
         self.jitter = jitter
         self.randomize = bool(randomize)
         self.stealth_mode = stealth_mode
-        self._bucket = TokenBucket(rate_per_sec=rate_limit, capacity=int(max(1, rate_limit)))
+
+        # Rate limit handling
+        self._rate_limit = float(rate_limit) if rate_limit is not None else 200.0
+        self._bucket = TokenBucket(rate_per_sec=self._rate_limit, capacity=int(max(1, self._rate_limit)))
         self._results_lock = threading.Lock()
+
+    @staticmethod
+    def _validate_host(host: str) -> None:
+        # Prefer IPv4 for compatibility; raise ValueError if cannot resolve
+        try:
+            socket.getaddrinfo(host, None, family=socket.AF_INET)
+        except socket.gaierror as e:
+            raise ValueError(f"Invalid target host: {host}") from e
+
+    @property
+    def rate_limit(self) -> float:
+        return self._rate_limit
+
+    @rate_limit.setter
+    def rate_limit(self, value: Optional[float]) -> None:
+        new_val = float(value) if value is not None else 200.0
+        new_val = max(0.01, new_val)
+        self._rate_limit = new_val
+        # Update token bucket if already created
+        if hasattr(self, "_bucket") and isinstance(self._bucket, TokenBucket):
+            self._bucket.rate = new_val
+            self._bucket.capacity = int(max(1, new_val))
 
     def scan(self) -> ScanResult:
         started = _now()
@@ -350,7 +392,6 @@ class PortScanner:
                 s.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
             except Exception:
                 pass
-            s_start = _now()
             s.connect((self.target, port))
             state = "open"
             reason = "tcp-connect"
