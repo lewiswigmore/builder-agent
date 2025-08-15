@@ -51,18 +51,20 @@ jobs:
           test -n "${AZURE_OPENAI_API_KEY}"
           echo "✅ Configuration validated."
 
-      # Auto-generate security tool ideas when backlog is low  
-      - name: Generate security tool backlog if needed
-        env:
-          AZURE_OPENAI_ENDPOINT: ${{ vars.AZURE_OPENAI_ENDPOINT }}
-          AZURE_OPENAI_API_KEY: ${{ secrets.AZURE_OPENAI_API_KEY }}
-          AZURE_OPENAI_API_VERSION: ${{ vars.AZURE_OPENAI_API_VERSION }}
-          AZURE_OPENAI_DEPLOYMENT: ${{ vars.AZURE_OPENAI_DEPLOYMENT }}
-          PYTHONPATH: .
+      # Check security tool backlog status
+      - name: Check security tool backlog
         run: |
           echo "🔍 Checking security tool backlog..."
-          # Only generate if we have fewer than 2 ready tools
-          python scripts/generate_backlog.py --min-ready 2 --make 3 --security-focus
+          # Count ready security tools in backlog/security_tools.yml
+          ready_count=$(python -c "
+          import yaml
+          with open('backlog/security_tools.yml', 'r') as f:
+              data = yaml.safe_load(f)
+          ready_tools = [tool for tool in data.get('security_tools', []) if tool.get('ready', False) and tool.get('status') == 'todo']
+          print(f'Found {len(ready_tools)} ready security tools in backlog')
+          print('Ready tools:', [tool['id'] for tool in ready_tools])
+          ")
+          echo "Security backlog status: $ready_count"
 
       - name: Build security tool
         env:
