@@ -1,4 +1,4 @@
-import pathlib, json, textwrap, sys
+import pathlib, json, textwrap, sys, os
 from datetime import datetime
 from agent.tools import read_backlog, pick_next_ticket, git, run_cmd, call_llm, apply_patches
 from agent.policies import MAX_RETRIES, MAX_CHANGED_LINES_DEFAULT
@@ -34,15 +34,21 @@ def write_tests(ticket):
     fname = (REPO / 'tests' / f"test_{safe_id}.py")
     fname.parent.mkdir(parents=True, exist_ok=True)
     prompt = textwrap.dedent('''
-    Write pytest tests for this feature, minimal and focused.
-    Acceptance criteria:
+    Write deterministic pytest tests for this feature. Follow these rules strictly:
+    - Create exactly two tests named test_default_greeting and test_greet_flag.
+    - Use subprocess to execute the CLI as: [sys.executable, '-m', 'your_package'] (and append flags as needed).
+    - Assert exact stdout lines: 'Hello, world!' and 'Hello, Alice!'.
+    - Assert return code == 0 for both.
+    - Do NOT import the package under test directly; exercise via the module entrypoint.
+    - At the top of the file, include: 
+        import sys
+        import subprocess
+    - Do not include any other text or comments.
+    Context:
+    - Acceptance criteria:
     {criteria}
-    Project layout uses "src" layout at src/your_package/.
-    At the top of the test, add:
-        import sys, pathlib
-        sys.path.append(str(pathlib.Path(__file__).resolve().parents[1] / 'src'))
-    so that `import your_package` works during pytest.
-    Only write Python code for pytest in one file. No prose.
+    - Project layout uses 'src' layout at src/your_package/ with a module entrypoint implemented in __main__.py that should call your CLI.
+    Only output valid Python code for pytest in one file. No prose.
     ''').format(criteria=json.dumps(ticket['acceptance_tests'], indent=2))
     test_code = call_llm(prompt)
     fname.write_text(test_code, encoding='utf-8')
@@ -76,6 +82,7 @@ def implement_feature(ticket, failing_output=None):
     {file_context}
 
     Your task is to implement the feature. Do NOT modify any files under tests/ in this step; tests are handled separately.
+    You MUST output at least one file block. If no changes are required to an allowed file, re-output the file unchanged.
     Output ONLY complete files using file blocks (no diffs, no prose, no extra text):
     ```file:relative/path/from/repo/root.py
     <entire file content here>
@@ -113,6 +120,11 @@ def main():
     if not ticket:
         print('No ready tickets.')
         return 0
+    # Ensure Python can resolve the 'src' layout for both pytest and any subprocesses spawned by tests
+    src_path = str(REPO / 'src')
+    existing = os.environ.get('PYTHONPATH', '')
+    if src_path not in existing.split(os.pathsep):
+        os.environ['PYTHONPATH'] = (src_path + (os.pathsep + existing if existing else ''))
     branch = f"feat/{ticket['id'].lower()}"
     git('checkout', '-B', branch)
 

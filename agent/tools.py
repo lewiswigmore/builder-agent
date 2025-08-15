@@ -76,7 +76,7 @@ def apply_patches(patch_text: str, allowlist: List[str]):
     # Normalize newlines across entire output
     patch_text = patch_text.replace('\r\n', '\n').replace('\r', '\n')
 
-    # Prefer file blocks for robustness
+    # Prefer file blocks for robustness (strict format)
     file_blocks = re.findall(r"```file:[ \t]*([^\n\r]+)\n(.*?)\n```", patch_text, flags=re.S)
     if file_blocks:
         for rel_path, content in file_blocks:
@@ -90,6 +90,66 @@ def apply_patches(patch_text: str, allowlist: List[str]):
             normalized = content.replace('\r\n', '\n')
             with open(abs_path, 'w', encoding='utf-8', newline='\n') as f:
                 f.write(normalized)
+        return
+
+    # Tolerant file block parsing: any fenced code block whose first non-empty line is 'file: path'
+    tolerant_blocks = re.findall(r"```[a-zA-Z0-9_-]*\n(.*?)\n```", patch_text, flags=re.S)
+    extracted_any = False
+    for blk in tolerant_blocks:
+        # Skip empty blocks
+        inner = blk.replace('\r\n', '\n').strip('\n')
+        if not inner.strip():
+            continue
+        lines = inner.split('\n')
+        # Find a 'file: path' marker in the first few lines
+        header_idx = -1
+        for i in range(min(5, len(lines))):
+            m = re.match(r"\s*(?:#\s*)?file:\s*([^\n\r]+)\s*$", lines[i], flags=re.I)
+            if m:
+                header_idx = i
+                rel_path = m.group(1).strip()
+                content = '\n'.join(lines[i+1:])
+                p = rel_path.replace('\\', '/')
+                if not any(p.startswith(allowed) for allowed in allowlist):
+                    raise RuntimeError(f'Patch touches disallowed path: {p}')
+                abs_path = (REPO / p).resolve()
+                os.makedirs(abs_path.parent, exist_ok=True)
+                with open(abs_path, 'w', encoding='utf-8', newline='\n') as f:
+                    f.write(content)
+                extracted_any = True
+                break
+        # If no header found, try if the entire block should go to a single allowed file (heuristic)
+    if extracted_any:
+        return
+
+    # Heuristic fallback: if exactly one code file is allowed to change, and we see any fenced code block,
+    # assume it is the full content for that file.
+    code_allowlist = [p for p in allowlist if not p.startswith('tests/')]
+    if len(code_allowlist) == 1 and tolerant_blocks:
+        p = code_allowlist[0]
+        abs_path = (REPO / p).resolve()
+        os.makedirs(abs_path.parent, exist_ok=True)
+        # Use the first code block content as the file content, stripping a leading "# file: ..." line if present
+        content = tolerant_blocks[0].replace('\r\n', '\n').strip('\n')
+        first_line = content.split('\n', 1)[0] if '\n' in content else content
+        if re.match(r"\s*(?:#\s*)?file:\s*", first_line, flags=re.I):
+            content = '\n'.join(content.split('\n')[1:])
+        with open(abs_path, 'w', encoding='utf-8', newline='\n') as f:
+            f.write(content)
+        return
+
+    # Unfenced 'file: path' format anywhere in the text
+    m = re.search(r"(?ims)^\s*file:\s*([^\n\r]+)\s*[\r\n]+(.*)$", patch_text)
+    if m:
+        rel_path = m.group(1).strip()
+        content = m.group(2)
+        p = rel_path.replace('\\', '/')
+        if not any(p.startswith(allowed) for allowed in allowlist):
+            raise RuntimeError(f'Patch touches disallowed path: {p}')
+        abs_path = (REPO / p).resolve()
+        os.makedirs(abs_path.parent, exist_ok=True)
+        with open(abs_path, 'w', encoding='utf-8', newline='\n') as f:
+            f.write(content)
         return
 
     # Otherwise, handle unified diffs
