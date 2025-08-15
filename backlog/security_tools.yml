@@ -16,7 +16,7 @@ security_tools:
       - "Export results to JSON format"
       - "Handle rate limiting parameters"
     ready: true
-    status: todo
+    status: done
     area_allowlist:
       - "tools/recon/port_scanner.py"
       - "tools/recon/__init__.py"
