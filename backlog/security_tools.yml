@@ -61,7 +61,7 @@ security_tools:
   - Show progress during cracking attempts
   - Handle invalid hash formats gracefully
   ready: true
-  status: todo
+  status: ready_for_review
   area_allowlist:
   - tools/vuln/hash_cracker.py
   - tools/vuln/wordlists/
@@ -321,4 +321,80 @@ security_tools:
   area_allowlist:
   - tools/iot_security/fuzzfox.py
   - tests/test_iot_003.py
+  max_changed_lines: 700
+- id: CL-002
+  title: 'NebulaGuard: Serverless & Container Runtime Policy Scanner'
+  category: cloud_security
+  description: A unified cloud-native security scanner that evaluates serverless functions
+    and containerized workloads across multi-cloud environments. Combines image/IaC
+    scanning, OPA policy evaluation, eBPF-based runtime detection, and signature/SBOM
+    verification (cosign/Sigstore) to prevent risky deployments and to detect runtime
+    escapes and secret exfiltration.
+  security_requirements:
+  - Cloud access uses read-only, least-privilege roles; policy enforces a denylist
+    of mutation APIs and validates that no write operations are executed.
+  - OPA policy bundles and rules are signed and verified before evaluation; policy
+    decisions and inputs are logged with integrity hashes.
+  - Container and function images must pass cosign signature verification and SBOM
+    presence checks; vulnerability scanning uses vetted, periodically mirrored CVE
+    feeds to support air-gapped mode.
+  - Runtime sensors leverage eBPF with minimal privileges and strict filtering to
+    avoid collecting sensitive environment data; data egress is rate-limited and encrypted
+    in transit.
+  - Multi-cloud API calls implement adaptive rate limiting and exponential backoff
+    to prevent throttling and service disruption.
+  - All findings are exportable in SARIF and JSON with deterministic IDs; reports
+    are optionally sealed with RFC 3161 timestamps.
+  acceptance_tests:
+  - Given a container image with a critical CVE and no cosign signature, the tool
+    fails the scan, cites CVE identifiers, refuses deployment with non-zero exit code,
+    and produces both SARIF and JSON reports.
+  - When scanning a Lambda function with wildcard IAM permissions and no timeout guard,
+    policies flag high severity findings with least-privilege remediation guidance;
+    execution trace confirms no write API calls occurred.
+  - In a Kubernetes cluster, the runtime sensor detects a process escape attempt (e.g.,
+    nsenter) and raises a high-confidence alert within 5 seconds without collecting
+    sensitive environment variables.
+  ready: true
+  status: todo
+  area_allowlist:
+  - tools/cloud_security/nebula_guard.py
+  - tests/test_cloud_002.py
+  max_changed_lines: 700
+- id: SC-003
+  title: 'Hermes-SBOM Sentinel: Provenance & Integrity Watcher'
+  category: supply_chain
+  description: A supply chain assurance platform that generates and monitors SBOMs
+    (SPDX/CycloneDX), verifies artifact provenance with in-toto/SLSA attestations,
+    and validates signatures/log inclusion via Sigstore (Fulcio/Rekor). It continuously
+    diffs SBOMs across builds, detects typosquatting and dependency confusion, and
+    enforces quarantine on integrity failures.
+  security_requirements:
+  - Artifact and provenance verification requires valid cosign signatures and Rekor
+    inclusion proofs; failures trigger quarantine with immutable incident records.
+  - In-toto attestations must satisfy SLSA Level 3 requirements; policy rejects artifacts
+    lacking a complete builder and materials chain.
+  - SBOMs are stored in content-addressed, append-only storage with transparency indexing;
+    diffs are signed and timestamped (RFC 3161).
+  - Typosquatting and dependency confusion detection uses lexical similarity, publisher
+    reputation, and registry trust policies; untrusted sources are blocked by default.
+  - Offline/air-gapped mode supported with pre-synced trust roots and CVE data; online
+    mode uses mTLS and key pinning for upstream trust services.
+  - All cryptographic primitives are selected for modern strength (Ed25519/ECDSA P-256,
+    SHA-256/SHA3-256) with secure key management and rotation.
+  acceptance_tests:
+  - Given an artifact with an invalid cosign signature or missing Rekor entry, verification
+    fails and the artifact is quarantined; the incident record includes Rekor log
+    index and chain hash.
+  - When presented with two consecutive builds, the SBOM diff highlights added/removed
+    dependencies and flags any downgrade of critical libraries; a signed diff attestation
+    is produced.
+  - A package named similarly to a popular dependency but from an untrusted registry
+    is flagged as potential typosquat with >95% confidence using lexical and publisher
+    heuristics.
+  ready: true
+  status: todo
+  area_allowlist:
+  - tools/supply_chain/hermes_sentinel.py
+  - tests/test_supply_chain_003.py
   max_changed_lines: 700
