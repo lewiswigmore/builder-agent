@@ -1,0 +1,168 @@
+name: Continuous Security Tool Builder
+on:
+  schedule:
+    # Run every 6 hours: 00:00, 06:00, 12:00, 18:00 UTC (4 times daily)
+    - cron: '0 0,6,12,18 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-security-tool:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Configure git identity
+        run: |
+          git config user.name 'security-builder[bot]'
+          git config user.email '41898282+security-builder[bot]@users.noreply.github.com'
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install -e .
+
+      # Extra safeguard: verify all env is present before running the agent
+      - name: Validate Azure OpenAI config
+        env:
+          AZURE_OPENAI_ENDPOINT: ${{ vars.AZURE_OPENAI_ENDPOINT }}
+          AZURE_OPENAI_API_KEY: ${{ secrets.AZURE_OPENAI_API_KEY }}
+          AZURE_OPENAI_API_VERSION: ${{ vars.AZURE_OPENAI_API_VERSION }}
+          AZURE_OPENAI_DEPLOYMENT: ${{ vars.AZURE_OPENAI_DEPLOYMENT }}
+        run: |
+          set -eu
+          echo "🔧 Security Tool Builder Configuration"
+          echo "Endpoint: ${AZURE_OPENAI_ENDPOINT}"
+          echo "Deployment: ${AZURE_OPENAI_DEPLOYMENT}" 
+          echo "API version: ${AZURE_OPENAI_API_VERSION}"
+          test -n "${AZURE_OPENAI_ENDPOINT}"
+          test -n "${AZURE_OPENAI_DEPLOYMENT}"
+          test -n "${AZURE_OPENAI_API_VERSION}"
+          test -n "${AZURE_OPENAI_API_KEY}"
+          echo "✅ Configuration validated."
+
+      # Check security tool backlog and generate new ideas
+      - name: Analyze backlog and generate ideas
+        run: |
+          echo "🔍 Checking security tool backlog..."
+          python -c "
+          import yaml
+          
+          with open('backlog/security_tools.yml', 'r') as f:
+              data = yaml.safe_load(f)
+          
+          # Count tools by status
+          todo_tools = [tool for tool in data.get('security_tools', []) if tool.get('ready', False) and tool.get('status') == 'todo']
+          done_tools = [tool for tool in data.get('security_tools', []) if tool.get('status') == 'done']
+          in_progress = [tool for tool in data.get('security_tools', []) if tool.get('status') == 'in_progress']
+          needs_work = [tool for tool in data.get('security_tools', []) if tool.get('status') == 'needs_work']
+          
+          print(f'📊 Backlog Status:')
+          print(f'  - TODO: {len(todo_tools)} tools')
+          print(f'  - IN PROGRESS: {len(in_progress)} tools')  
+          print(f'  - NEEDS WORK: {len(needs_work)} tools')
+          print(f'  - COMPLETED: {len(done_tools)} tools')
+          print(f'')
+          print(f'🎯 Next tools to build: {[tool[\"id\"] for tool in todo_tools[:3]]}')
+          "
+
+      - name: Build security tool in new branch
+        id: build_tool
+        env:
+          AZURE_OPENAI_ENDPOINT: ${{ vars.AZURE_OPENAI_ENDPOINT }}
+          AZURE_OPENAI_API_KEY: ${{ secrets.AZURE_OPENAI_API_KEY }}
+          AZURE_OPENAI_API_VERSION: ${{ vars.AZURE_OPENAI_API_VERSION }}
+          AZURE_OPENAI_DEPLOYMENT: ${{ vars.AZURE_OPENAI_DEPLOYMENT }}
+          PYTHONPATH: .
+        run: |
+          echo "🛡️ Starting security tool builder..."
+          python -m agent.agent
+          
+          # Check if a new branch was created
+          CURRENT_BRANCH=$(git branch --show-current)
+          if [[ "$CURRENT_BRANCH" != "main" ]]; then
+            echo "branch_name=$CURRENT_BRANCH" >> $GITHUB_OUTPUT
+            echo "🌿 Created new security tool branch: $CURRENT_BRANCH"
+          else
+            echo "ℹ️ No new security tool created this run (all tools may be in progress or backlog empty)"
+          fi
+
+      - name: Generate new tool ideas
+        if: steps.build_tool.outputs.branch_name != ''
+        timeout-minutes: 5
+        continue-on-error: true
+        env:
+          AZURE_OPENAI_ENDPOINT: ${{ vars.AZURE_OPENAI_ENDPOINT }}
+          AZURE_OPENAI_API_KEY: ${{ secrets.AZURE_OPENAI_API_KEY }}
+          AZURE_OPENAI_API_VERSION: ${{ vars.AZURE_OPENAI_API_VERSION }}
+          AZURE_OPENAI_DEPLOYMENT: ${{ vars.AZURE_OPENAI_DEPLOYMENT }}
+        run: |
+          echo "💡 Generating new security tool ideas..."
+          
+          # First, switch to main and update status from completed branch
+          COMPLETED_BRANCH=${{ steps.build_tool.outputs.branch_name }}
+          echo "🔄 Syncing status from $COMPLETED_BRANCH to main..."
+          
+          git checkout main
+          git pull origin main
+          
+          # Get the updated backlog status from the completed branch
+          git show origin/$COMPLETED_BRANCH:backlog/security_tools.yml > /tmp/branch_backlog.yml
+          
+          # Copy the updated status to main's backlog (preserving main's other changes)
+          python -c "
+          import yaml
+          
+          # Read both versions
+          with open('backlog/security_tools.yml', 'r') as f:
+              main_backlog = yaml.safe_load(f)
+          with open('/tmp/branch_backlog.yml', 'r') as f:
+              branch_backlog = yaml.safe_load(f)
+          
+          # Find tools that changed status in the branch
+          branch_tools = {tool['id']: tool for tool in branch_backlog.get('security_tools', [])}
+          
+          updated_count = 0
+          for i, tool in enumerate(main_backlog.get('security_tools', [])):
+              tool_id = tool['id']
+              if tool_id in branch_tools:
+                  branch_tool = branch_tools[tool_id]
+                  if tool.get('status') != branch_tool.get('status'):
+                      print(f'📝 Updating {tool_id}: {tool.get(\"status\")} -> {branch_tool.get(\"status\")}')
+                      main_backlog['security_tools'][i]['status'] = branch_tool['status']
+                      updated_count += 1
+          
+          if updated_count > 0:
+              with open('backlog/security_tools.yml', 'w') as f:
+                  yaml.safe_dump(main_backlog, f, default_flow_style=False, sort_keys=False)
+              print(f'✅ Updated {updated_count} tool status(es) in main')
+          else:
+              print('ℹ️ No status updates needed')
+          "
+          
+          # Now generate new ideas
+          python scripts/generate_backlog.py --security-focus --expand-ideas
+          
+          # Commit both status updates and new ideas
+          git add backlog/security_tools.yml
+          
+          if ! git diff --cached --quiet; then
+            git commit -m "Update tool status and add new ideas
+            
+            - Synced completed tool status from $COMPLETED_BRANCH
+            - Generated new security tool ideas  
+            - Expanded backlog for future development cycles"
+            git push
+            echo "✅ Status updates and new ideas committed to main"
+          else
+            echo "ℹ️ No changes to commit"
+          fi

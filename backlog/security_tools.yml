@@ -1,0 +1,324 @@
+security_tools:
+- id: RECON-001
+  title: Advanced Port Scanner
+  category: reconnaissance
+  description: Multi-threaded port scanner with service detection, banner grabbing,
+    and vulnerability hints
+  security_requirements:
+  - TCP and UDP port scanning capabilities
+  - Service version detection and banner grabbing
+  - Rate limiting to avoid detection
+  - Output in multiple formats (JSON, XML, CSV)
+  - Stealth scanning techniques
+  acceptance_tests:
+  - Scan common ports (1-1000) on localhost successfully
+  - Detect SSH service on port 22 with banner
+  - Export results to JSON format
+  - Handle rate limiting parameters
+  ready: true
+  status: ready_for_review
+  area_allowlist:
+  - tools/recon/port_scanner.py
+  - tools/recon/__init__.py
+  - tests/test_recon_001.py
+  max_changed_lines: 500
+- id: RECON-002
+  title: Subdomain Hunter
+  category: reconnaissance
+  description: Intelligent subdomain enumeration using multiple techniques (DNS, certificates,
+    search engines)
+  security_requirements:
+  - DNS brute force with common wordlists
+  - Certificate transparency log searching
+  - Search engine dorking for subdomains
+  - Wildcard detection and filtering
+  - Concurrent processing for speed
+  acceptance_tests:
+  - Find at least 5 subdomains for a test domain
+  - Detect wildcard DNS configurations
+  - Output unique, valid subdomains only
+  - Handle timeouts gracefully
+  ready: true
+  status: todo
+  area_allowlist:
+  - tools/recon/subdomain_hunter.py
+  - tools/recon/wordlists/
+  - tests/test_recon_002.py
+  max_changed_lines: 500
+- id: VULN-001
+  title: Hash Cracker Suite
+  category: vulnerability
+  description: Multi-algorithm hash cracking tool with wordlist and brute force attacks
+  security_requirements:
+  - Support MD5, SHA1, SHA256, SHA512, bcrypt
+  - Wordlist-based attacks with custom lists
+  - Brute force with character sets
+  - Hash format detection
+  - Progress tracking and resume capability
+  acceptance_tests:
+  - Crack MD5 hash of 'password' using rockyou wordlist sample
+  - Detect hash algorithm automatically
+  - Show progress during cracking attempts
+  - Handle invalid hash formats gracefully
+  ready: true
+  status: todo
+  area_allowlist:
+  - tools/vuln/hash_cracker.py
+  - tools/vuln/wordlists/
+  - tests/test_vuln_001.py
+  max_changed_lines: 600
+- id: VULN-002
+  title: SSL/TLS Certificate Inspector
+  category: vulnerability
+  description: Comprehensive SSL/TLS certificate security analysis and vulnerability
+    detection
+  security_requirements:
+  - Certificate chain validation
+  - Weak cipher suite detection
+  - Certificate expiration warnings
+  - Common SSL vulnerabilities (Heartbleed, POODLE, etc.)
+  - Certificate transparency log verification
+  acceptance_tests:
+  - Analyze certificate for https://www.google.com
+  - Detect certificate expiration date
+  - Identify cipher suites in use
+  - Flag weak encryption algorithms
+  ready: true
+  status: todo
+  area_allowlist:
+  - tools/vuln/cert_inspector.py
+  - tests/test_vuln_002.py
+  max_changed_lines: 450
+- id: HUNT-001
+  title: Security Log Analyzer
+  category: threat_hunting
+  description: Advanced log analysis tool for detecting security events and anomalies
+  security_requirements:
+  - Parse multiple log formats (syslog, JSON, CSV)
+  - Pattern matching for known attack signatures
+  - Anomaly detection using statistical analysis
+  - IOC (Indicators of Compromise) correlation
+  - Timeline analysis and event correlation
+  acceptance_tests:
+  - Parse sample Apache access logs successfully
+  - Detect SQL injection attempts in logs
+  - Identify suspicious IP addresses
+  - Generate security event timeline
+  ready: true
+  status: todo
+  area_allowlist:
+  - tools/threat_hunt/log_analyzer.py
+  - tools/threat_hunt/signatures/
+  - tests/test_hunt_001.py
+  max_changed_lines: 700
+- id: NET-001
+  title: Network Traffic Analyzer
+  category: network
+  description: Real-time network packet analysis with security-focused detection capabilities
+  security_requirements:
+  - Live packet capture using pcap
+  - Protocol analysis (HTTP, DNS, TCP, UDP)
+  - Malicious payload detection
+  - Network flow analysis
+  - Export PCAP files for further analysis
+  acceptance_tests:
+  - Capture packets from network interface
+  - Detect HTTP requests in traffic
+  - Identify potential malicious domains
+  - Export captured data to PCAP format
+  ready: false
+  status: todo
+  area_allowlist:
+  - tools/network/traffic_analyzer.py
+  - tests/test_net_001.py
+  max_changed_lines: 550
+- id: CRYPTO-001
+  title: Encryption Utility Suite
+  category: cryptography
+  description: Comprehensive encryption/decryption tool with multiple cipher support
+  security_requirements:
+  - AES encryption/decryption with multiple modes
+  - RSA key generation and operations
+  - Secure random key generation
+  - File encryption with integrity verification
+  - Password-based key derivation (PBKDF2)
+  acceptance_tests:
+  - Encrypt and decrypt a test file successfully
+  - Generate secure RSA key pairs
+  - Verify file integrity after encryption/decryption
+  - Handle password-based encryption
+  ready: true
+  status: todo
+  area_allowlist:
+  - tools/crypto/encryption_suite.py
+  - tests/test_crypto_001.py
+  max_changed_lines: 500
+- id: AISEC-001
+  title: AI Model Supply Chain Auditor
+  category: ai_security
+  description: 'End-to-end auditing of AI pipelines: model/dataset integrity, dependency
+    SBOM signing, Trojan/backdoor heuristics, and prompt-injection policy testing.'
+  security_requirements:
+  - Operate on offline copies of artifacts; never upload model weights or datasets.
+  - Execute any untrusted code in a hardened sandbox without network egress.
+  - Only read repository metadata and artifacts; no changes are made to sources or
+    registries.
+  acceptance_tests:
+  - Given a model repository with an unsigned or mismatched signature for model weights,
+    the tool flags integrity failure and halts the pipeline with a high-severity alert.
+  - Given a dataset with embedded trigger patterns and an associated model, the Trojan
+    scan returns an anomaly score above a configurable threshold and emits a high-confidence
+    finding.
+  - When running prompt-injection tests against a protected inference endpoint with
+    defined allow/deny policies, injected content is detected and blocked, and audit
+    logs contain the policy action and rationale.
+  ready: true
+  status: todo
+  area_allowlist:
+  - tools/ai_security/ai_model_supply_chain_auditor.py
+  - tests/test_ai_security_aisec_001.py
+  max_changed_lines: 500
+- id: CLOUD-001
+  title: Cloud IAM Drift Hunter & Attack Path Mapper
+  category: cloud
+  description: Builds a cross-cloud graph of identities, policies, and resources to
+    detect drift and map potential privilege-escalation and lateral-movement paths
+    across AWS/Azure/GCP.
+  security_requirements:
+  - Use cloud-native read-only permissions; never write, modify, or delete resources.
+  - Scope collection to specified accounts/subscriptions/projects and respect service
+    rate limits.
+  - Do not retrieve or display secret values; only metadata and policy documents.
+  acceptance_tests:
+  - On a test tenant with a misconfigured role trust policy, the tool identifies an
+    attack path from a low-privilege role to admin and provides prioritized remediation
+    steps.
+  - After establishing a baseline snapshot, a new inline policy is added; the subsequent
+    scan reports drift with a clear diff of added permissions and affected identities.
+  - When API credentials lack required read permissions, the tool fails gracefully,
+    listing missing permissions and suggesting least-privilege remediation.
+  ready: true
+  status: todo
+  area_allowlist:
+  - tools/cloud/iam_attack_path_mapper.py
+  - tests/test_cloud_cloud_001.py
+  max_changed_lines: 500
+- id: IOT-001
+  title: Firmware Behavior Sandbox & SBOM Analyzer
+  category: iot
+  description: 'Automated static and dynamic analysis of IoT firmware: SBOM extraction,
+    CVE correlation, service hardening checks, secrets discovery, and emulated runtime
+    network behavior.'
+  security_requirements:
+  - Run firmware in an isolated VM/emulator with no outbound internet by default.
+  - Sanitize and anonymize any telemetry; do not retain proprietary code beyond the
+    analysis session.
+  - Validate firmware provenance and require explicit authorization for analysis.
+  acceptance_tests:
+  - Given a firmware image that starts Telnet with default credentials, the sandbox
+    flags weak service configuration and reports credential exposure risk with hardening
+    recommendations.
+  - From an extracted SBOM containing a vulnerable OpenSSL version, the tool correlates
+    relevant CVEs and outputs severity, affected components, and fixed versions.
+  - If the firmware attempts DNS tunneling during emulation, the network monitor detects
+    and blocks the exfiltration attempt, recording an alert with PCAP evidence references.
+  ready: true
+  status: todo
+  area_allowlist:
+  - tools/iot/firmware_behavior_sandbox.py
+  - tests/test_iot_iot_001.py
+  max_changed_lines: 500
+- id: AI-001
+  title: Adversarial Canary
+  category: ai_security
+  description: Automated adversarial attack and poisoning simulator for ML models
+    that orchestrates white-box/black-box attacks (FGSM, PGD, CW, AutoAttack), synthetic
+    backdoors, data drift detection, and AI red teaming with signed, reproducible
+    provenance and safety-guarded agent tooling.
+  security_requirements:
+  - Execute all attack/red-team workloads inside locked-down, ephemeral sandboxes
+    (seccomp/AppArmor, no-new-privileges, read-only rootfs, egress denied by default
+    with explicit allowlists) and emit in-toto/SLSA-3 style signed attestations binding
+    model/dataset hashes, parameters, and seeds.
+  - Apply content and tool-use isolation for red-team agents (strict prompt/tool policies,
+    output filtering, capability-scoped APIs) with cryptographic sealing (SHA-256
+    manifests + transparency log) and reproducibility guarantees (identical artifact
+    digests given fixed seeds).
+  acceptance_tests:
+  - Given a PyTorch ResNet trained on CIFAR-10 and a 1k-sample eval set, the tool
+    generates targeted and untargeted adversarial examples via FGSM and PGD, reports
+    attack success rates and accuracy deltas, produces a signed provenance attestation
+    containing model/dataset digests and attack parameters, blocks all container egress
+    during execution, and exports a report with confusion-matrix deltas; re-verification
+    of the attestation signature must succeed.
+  - When injecting a 1% label-flip backdoor with a specified trigger, the tool detects
+    distributional anomalies, raises a poisoning risk score >= 0.8, proposes mitigation
+    (data filter + fine-tune), and on rerun with the same seed reproduces byte-identical
+    adversarial samples and identical manifest hashes for all exported artifacts.
+  ready: true
+  status: todo
+  area_allowlist:
+  - tools/ai_security/adversarial_canary.py
+  - tests/test_ai_001.py
+  max_changed_lines: 700
+- id: SC-002
+  title: SBOM Sentinel
+  category: supply_chain
+  description: Continuous dependency analysis and SBOM generation (SPDX/CycloneDX)
+    with integrity verification, hermetic build replays, provenance attestations,
+    typosquat detection, and signed transparency-backed publishing for multi-language
+    projects.
+  security_requirements:
+  - Generate SBOMs and provenance signed with Sigstore/cosign, store and verify inclusion
+    in Rekor transparency logs, and enforce fail-closed validation of signature chains
+    (OIDC identities, cert chains, time-stamping).
+  - Perform hermetic builds inside ephemeral, network-locked sandboxes using content-addressed
+    caches and strict source allowlists; produce SLSA-3 attestations referencing exact
+    inputs, toolchains, and environmental digests; block on ambiguity or non-reproducible
+    outputs.
+  acceptance_tests:
+  - For a Python repository with transitive dependencies containing a look-alike package
+    (typosquat), the tool halts the pipeline, flags the suspicious package with evidence,
+    emits a CycloneDX SBOM including VEX notes for known false positives, signs the
+    SBOM/provenance with cosign, and verifies Rekor inclusion and identity claims
+    successfully.
+  - Given two releases (v1.0.0 and v1.1.0), the tool produces a deterministic SBOM
+    diff highlighting an added native binary lacking source and signature; integrity
+    checks fail closed, the build is blocked, and rerunning the full pipeline yields
+    identical SBOM and attestation digests.
+  ready: true
+  status: todo
+  area_allowlist:
+  - tools/supply_chain/sbom_sentinel.py
+  - tests/test_sc_002.py
+  max_changed_lines: 700
+- id: IOT-003
+  title: FuzzFox IoT
+  category: iot_security
+  description: Passive IoT device discovery with firmware analysis and protocol-aware
+    fuzzing for MQTT, CoAP, BLE, and Modbus/TCP using stateful models, rate-limited
+    traffic shaping, and microsegmented sandboxes to prevent collateral impact on
+    operational networks.
+  security_requirements:
+  - Enforce protocol-specific rate limits and microsegmentation via eBPF network policies
+    and dedicated namespaces; implement a kill-switch and health checks to quarantine
+    fuzzers on anomaly, ensuring isolation of test traffic from production networks.
+  - Handle firmware images in read-only, non-root containers with dropped capabilities;
+    apply signed YARA rule packs for secret/artifact detection and scrub PII from
+    reports while preserving forensic hashes for auditability.
+  acceptance_tests:
+  - On a lab segment hosting an MQTT camera and a CoAP sensor, the tool passively
+    fingerprints both via mDNS/SSDP and traffic heuristics, then runs protocol-aware
+    fuzzers capped at 100 packets/sec per target; no device crashes occur, at least
+    one input validation issue is identified, and all fuzz traffic is contained within
+    the eBPF namespace as verified by counters (no leakage to other interfaces).
+  - Given a vendor firmware archive, the tool extracts the filesystem without mounting,
+    detects secrets via signed YARA packs, redacts them in human-readable reports
+    while preserving SHA-256 evidence in a sealed manifest, and denies any write attempts
+    to the firmware path (read-only enforcement observed in logs).
+  ready: true
+  status: todo
+  area_allowlist:
+  - tools/iot_security/fuzzfox.py
+  - tests/test_iot_003.py
+  max_changed_lines: 700

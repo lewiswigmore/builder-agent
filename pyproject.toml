@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=45", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "security-tool-builder"
+version = "0.1.0"
+description = "An autonomous AI agent that builds security-focused tools daily"
+authors = [
+    {name = "Security Tool Builder", email = "security-builder@example.com"}
+]
+dependencies = [
+    "pyyaml",
+    "requests",
+    "openai>=1.40.0",
+    "cryptography>=3.0.0",
+    "scapy>=2.4.0", 
+    "dnspython>=2.0.0",
+    "python-nmap>=0.7.1",
+    "colorama>=0.4.0"
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+]
+
+[project.scripts]
+# Security tool entry points will be added automatically
+security-tool-builder = "agent.agent:main"
+
+[tool.setuptools]
+package-dir = {"" = "."}
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["tools*", "agent*", "scripts*"]
