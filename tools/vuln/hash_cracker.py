@@ -8,44 +8,33 @@ import os
 import re
 import sys
 import time
-from typing import Callable, Dict, List, Optional, Tuple, Any
-
+from typing import Callable, Dict, List, Optional, Tuple, Any, Union
 try:
     import bcrypt as bcrypt_lib  # type: ignore
     HAS_BCRYPT = True
 except Exception:
     bcrypt_lib = None
     HAS_BCRYPT = False
-
 ETHICAL_WARNING = """WARNING: Authorized testing only!
 This hash cracking tool is intended solely for lawful security testing,
 password recovery for systems you own, or where you have explicit permission.
 Unauthorized use may violate laws and regulations. Use responsibly.
 """
-
 DEFAULT_SYMBOLS = r"""!@#$%^&*()-_=+[]{};:'",.<>/?\|`~"""
-
-# --------------- Utility functions ---------------
-
 def eprint(*args, **kwargs):
     print(*args, file=sys.stderr, **kwargs)
-
 def seconds_to_hms(seconds: float) -> str:
     seconds = max(0, int(seconds))
     h = seconds // 3600
     m = (seconds % 3600) // 60
     s = seconds % 60
     return f"{h:02d}:{m:02d}:{s:02d}"
-
 def is_hex(s: str) -> bool:
     return bool(re.fullmatch(r"[0-9a-fA-F]+", s))
-
 def detect_hash_type(hash_str: str) -> Optional[str]:
     hs = hash_str.strip()
-    # bcrypt
     if hs.startswith("$2a$") or hs.startswith("$2b$") or hs.startswith("$2y$"):
         return "bcrypt"
-    # hex length based
     if is_hex(hs):
         l = len(hs)
         if l == 32:
@@ -57,17 +46,12 @@ def detect_hash_type(hash_str: str) -> Optional[str]:
         if l == 128:
             return "sha512"
     return None
-
-# Public detection aliases for test adapters
 def detect_hash(hash_str: str) -> Optional[str]:
     return detect_hash_type(hash_str)
-
 def detect_algorithm(hash_str: str) -> Optional[str]:
     return detect_hash_type(hash_str)
-
 def identify_hash(hash_str: str) -> Optional[str]:
     return detect_hash_type(hash_str)
-
 def validate_hash(hash_str: str, algo: str) -> Tuple[bool, Optional[str]]:
     hs = hash_str.strip()
     if algo == "bcrypt":
@@ -85,7 +69,6 @@ def validate_hash(hash_str: str, algo: str) -> Tuple[bool, Optional[str]]:
         if len(hs) != exp or not is_hex(hs):
             return False, f"Invalid {algo} hash format. Expected {exp}-character hexadecimal string."
         return True, None
-
 def compute_digest(algo: str, plaintext: str, encoding: str = "utf-8") -> str:
     data = plaintext.encode(encoding, errors="ignore")
     if algo == "md5":
@@ -97,7 +80,6 @@ def compute_digest(algo: str, plaintext: str, encoding: str = "utf-8") -> str:
     if algo == "sha512":
         return hashlib.sha512(data).hexdigest()
     raise ValueError(f"Unsupported digest algorithm: {algo}")
-
 def verify_candidate(algo: str, hash_str: str, candidate: str, encoding: str = "utf-8") -> bool:
     if algo == "bcrypt":
         if not HAS_BCRYPT:
@@ -108,7 +90,6 @@ def verify_candidate(algo: str, hash_str: str, candidate: str, encoding: str = "
             return False
     else:
         return compute_digest(algo, candidate, encoding).lower() == hash_str.lower()
-
 def parse_charset(spec: str, extra: str = "") -> str:
     parts = [p.strip().lower() for p in spec.split(",") if p.strip()]
     charset = ""
@@ -122,10 +103,8 @@ def parse_charset(spec: str, extra: str = "") -> str:
         elif p == "symbols":
             charset += DEFAULT_SYMBOLS
         else:
-            # treat as literal characters
             charset += p
     charset += extra
-    # Deduplicate while preserving order
     seen = set()
     unique = []
     for ch in charset:
@@ -133,7 +112,6 @@ def parse_charset(spec: str, extra: str = "") -> str:
             seen.add(ch)
             unique.append(ch)
     return "".join(unique)
-
 def count_lines_in_file(path: str) -> int:
     count = 0
     try:
@@ -141,7 +119,6 @@ def count_lines_in_file(path: str) -> int:
             for chunk in iter(lambda: f.read(1024 * 1024), b""):
                 count += chunk.count(b"\n")
     except Exception:
-        # fallback slow path
         try:
             with open(path, "r", encoding="utf-8", errors="ignore") as f:
                 for _ in f:
@@ -149,7 +126,6 @@ def count_lines_in_file(path: str) -> int:
         except Exception:
             pass
     return count
-
 def hr_number(n: float) -> str:
     units = ["", "K", "M", "G", "T"]
     i = 0
@@ -161,9 +137,6 @@ def hr_number(n: float) -> str:
     if n >= 10:
         return f"{n:,.1f}{units[i]}"
     return f"{n:,.2f}{units[i]}"
-
-# --------------- Progress and resume ---------------
-
 class Progress:
     def __init__(self, total: Optional[int], interval_sec: float = 1.0, mode: str = "wordlist", callback: Optional[Callable[[Dict[str, Any]], None]] = None):
         self.total = total
@@ -174,10 +147,11 @@ class Progress:
         self.last_print = 0.0
         self.callback = callback
         self.last_callback = 0.0
-
-    def tick(self, n: int = 1):
+        self.last_candidate: Optional[str] = None
+    def tick(self, n: int = 1, last_candidate: Optional[str] = None):
         self.attempts += n
-
+        if last_candidate is not None:
+            self.last_candidate = last_candidate
     def maybe_print(self, prefix: str = ""):
         now = time.time()
         if (now - self.last_print) >= self.interval:
@@ -195,27 +169,24 @@ class Progress:
             eprint(msg)
             if self.callback:
                 try:
-                    self.callback({
-                        "mode": self.mode,
-                        "attempts": self.attempts,
-                        "total": self.total,
-                        "rate": rate,
-                        "elapsed": elapsed,
-                        "eta": eta if self.total else None,
-                        "message": msg,
-                    })
+                    self.callback(
+                        mode=self.mode,
+                        attempts=self.attempts,
+                        total=self.total,
+                        rate=rate,
+                        elapsed=elapsed,
+                        eta=eta if self.total else None,
+                        message=msg,
+                        last_candidate=self.last_candidate,
+                    )
                 except Exception:
-                    # Do not let callback issues break cracking
                     pass
-
 class ResumeManager:
     def __init__(self, resume_file: Optional[str]):
         self.resume_file = resume_file
-
     @staticmethod
     def make_default_path(config_id: str) -> str:
         return f".hash_cracker_resume_{config_id}.json"
-
     def load(self) -> Optional[Dict]:
         if not self.resume_file:
             return None
@@ -226,7 +197,6 @@ class ResumeManager:
         except Exception:
             return None
         return None
-
     def save(self, data: Dict):
         if not self.resume_file:
             return
@@ -235,47 +205,30 @@ class ResumeManager:
                 json.dump(data, f, indent=2)
         except Exception:
             pass
-
     def reset(self):
         if self.resume_file and os.path.exists(self.resume_file):
             try:
                 os.remove(self.resume_file)
             except Exception:
                 pass
-
-# --------------- Wordlist attack ---------------
-
-def wordlist_attack(
-    hash_str: str,
-    algo: str,
-    wordlist_paths: List[str],
-    encoding: str,
-    progress: Progress,
-    resume: Optional[Dict],
-    resume_mgr: ResumeManager,
-    save_interval_sec: float = 5.0,
-) -> Tuple[Optional[str], int]:
+def wordlist_attack(hash_str: str, algo: str, wordlist_paths: List[str], encoding: str, progress: Progress, resume: Optional[Dict], resume_mgr: ResumeManager, save_interval_sec: float = 5.0) -> Tuple[Optional[str], int]:
     file_index = 0
-    line_number = 0  # number of lines already processed in current file
+    line_number = 0
     attempts = 0
     total_lines = None
     last_save = time.time()
-
-    # Pre-count total lines for progress
     try:
         counts = [count_lines_in_file(p) for p in wordlist_paths]
         total_lines = sum(counts)
         progress.total = total_lines
     except Exception:
         total_lines = None
-
     if resume and resume.get("state", {}).get("mode") == "wordlist":
         st = resume["state"]
         file_index = int(st.get("file_index", 0))
         line_number = int(st.get("line_number", 0))
         attempts = int(resume.get("attempts", 0))
         progress.attempts = attempts
-
     for fi in range(file_index, len(wordlist_paths)):
         path = wordlist_paths[fi]
         if not os.path.isfile(path):
@@ -283,7 +236,6 @@ def wordlist_attack(
             continue
         try:
             with open(path, "r", encoding=encoding, errors="ignore") as f:
-                # Skip lines if resuming within this file
                 skipped = 0
                 current_line = 0
                 if fi == file_index and line_number > 0:
@@ -296,20 +248,11 @@ def wordlist_attack(
                 for line in f:
                     candidate = line.rstrip("\r\n")
                     attempts += 1
-                    progress.tick(1)
+                    progress.tick(1, last_candidate=candidate)
                     if verify_candidate(algo, hash_str, candidate, encoding):
-                        # Save final state
                         resume_mgr.save({
-                            "meta": {
-                                "mode": "wordlist",
-                                "algo": algo,
-                                "hash": hash_str,
-                            },
-                            "state": {
-                                "mode": "wordlist",
-                                "file_index": fi,
-                                "line_number": current_line + 1,
-                            },
+                            "meta": {"mode": "wordlist","algo": algo,"hash": hash_str,},
+                            "state": {"mode": "wordlist","file_index": fi,"line_number": current_line + 1,},
                             "attempts": attempts,
                             "updated_at": time.time(),
                             "cracked": True,
@@ -320,16 +263,8 @@ def wordlist_attack(
                     now = time.time()
                     if now - last_save >= save_interval_sec:
                         resume_mgr.save({
-                            "meta": {
-                                "mode": "wordlist",
-                                "algo": algo,
-                                "hash": hash_str,
-                            },
-                            "state": {
-                                "mode": "wordlist",
-                                "file_index": fi,
-                                "line_number": current_line,
-                            },
+                            "meta": {"mode": "wordlist","algo": algo,"hash": hash_str,},
+                            "state": {"mode": "wordlist","file_index": fi,"line_number": current_line,},
                             "attempts": attempts,
                             "updated_at": now,
                         })
@@ -338,44 +273,23 @@ def wordlist_attack(
         except KeyboardInterrupt:
             eprint("\n[!] Interrupted by user. Saving progress...")
             resume_mgr.save({
-                "meta": {
-                    "mode": "wordlist",
-                    "algo": algo,
-                    "hash": hash_str,
-                },
-                "state": {
-                    "mode": "wordlist",
-                    "file_index": fi,
-                    "line_number": current_line if 'current_line' in locals() else line_number,
-                },
+                "meta": {"mode": "wordlist","algo": algo,"hash": hash_str,},
+                "state": {"mode": "wordlist","file_index": fi,"line_number": current_line if 'current_line' in locals() else line_number,},
                 "attempts": attempts,
                 "updated_at": time.time(),
             })
             raise
         except Exception as ex:
             eprint(f"[!] Error reading '{path}': {ex}")
-    # Not found
     resume_mgr.save({
-        "meta": {
-            "mode": "wordlist",
-            "algo": algo,
-            "hash": hash_str,
-        },
-        "state": {
-            "mode": "wordlist",
-            "file_index": len(wordlist_paths),
-            "line_number": 0,
-        },
+        "meta": {"mode": "wordlist","algo": algo,"hash": hash_str,},
+        "state": {"mode": "wordlist","file_index": len(wordlist_paths),"line_number": 0,},
         "attempts": attempts,
         "updated_at": time.time(),
         "cracked": False,
     })
     return None, attempts
-
-# --------------- Brute force attack ---------------
-
 def number_to_password(pos: int, charset: str, length: int) -> str:
-    # base-N conversion with leading zeros to ensure fixed length
     n = len(charset)
     chars = []
     v = pos
@@ -383,43 +297,27 @@ def number_to_password(pos: int, charset: str, length: int) -> str:
         chars.append(charset[v % n])
         v //= n
     return "".join(reversed(chars))
-
 def brute_force_totals(n_charset: int, min_len: int, max_len: int) -> int:
     total = 0
     for L in range(min_len, max_len + 1):
         total += int(pow(n_charset, L))
     return total
-
-def brute_force_attack(
-    hash_str: str,
-    algo: str,
-    charset: str,
-    min_len: int,
-    max_len: int,
-    encoding: str,
-    progress: Progress,
-    resume: Optional[Dict],
-    resume_mgr: ResumeManager,
-    save_interval_sec: float = 5.0,
-) -> Tuple[Optional[str], int]:
+def brute_force_attack(hash_str: str, algo: str, charset: str, min_len: int, max_len: int, encoding: str, progress: Progress, resume: Optional[Dict], resume_mgr: ResumeManager, save_interval_sec: float = 5.0) -> Tuple[Optional[str], int]:
     n = len(charset)
     if n == 0:
         raise ValueError("Empty charset for brute force.")
     attempts = 0
     curr_len = min_len
-    position = 0  # position within current length
+    position = 0
     last_save = time.time()
-
     total = brute_force_totals(n, min_len, max_len)
     progress.total = total
-
     if resume and resume.get("state", {}).get("mode") == "bruteforce":
         st = resume["state"]
         curr_len = int(st.get("current_length", min_len))
         position = int(st.get("position", 0))
         attempts = int(resume.get("attempts", 0))
         progress.attempts = attempts
-
     for L in range(curr_len, max_len + 1):
         start_pos = position if L == curr_len else 0
         max_pos = int(pow(n, L))
@@ -427,22 +325,11 @@ def brute_force_attack(
         while pos < max_pos:
             candidate = number_to_password(pos, charset, L)
             attempts += 1
-            progress.tick(1)
+            progress.tick(1, last_candidate=candidate)
             if verify_candidate(algo, hash_str, candidate, encoding):
                 resume_mgr.save({
-                    "meta": {
-                        "mode": "bruteforce",
-                        "algo": algo,
-                        "hash": hash_str,
-                    },
-                    "state": {
-                        "mode": "bruteforce",
-                        "current_length": L,
-                        "position": pos + 1,
-                        "charset": charset,
-                        "min_len": min_len,
-                        "max_len": max_len,
-                    },
+                    "meta": {"mode": "bruteforce","algo": algo,"hash": hash_str,},
+                    "state": {"mode": "bruteforce","current_length": L,"position": pos + 1,"charset": charset,"min_len": min_len,"max_len": max_len,},
                     "attempts": attempts,
                     "updated_at": time.time(),
                     "cracked": True,
@@ -453,59 +340,32 @@ def brute_force_attack(
             now = time.time()
             if now - last_save >= save_interval_sec:
                 resume_mgr.save({
-                    "meta": {
-                        "mode": "bruteforce",
-                        "algo": algo,
-                        "hash": hash_str,
-                    },
-                    "state": {
-                        "mode": "bruteforce",
-                        "current_length": L,
-                        "position": pos,
-                        "charset": charset,
-                        "min_len": min_len,
-                        "max_len": max_len,
-                    },
+                    "meta": {"mode": "bruteforce","algo": algo,"hash": hash_str,},
+                    "state": {"mode": "bruteforce","current_length": L,"position": pos,"charset": charset,"min_len": min_len,"max_len": max_len,},
                     "attempts": attempts,
                     "updated_at": now,
                 })
                 last_save = now
             progress.maybe_print()
     resume_mgr.save({
-        "meta": {
-            "mode": "bruteforce",
-            "algo": algo,
-        },
-        "state": {
-            "mode": "bruteforce",
-            "current_length": max_len,
-            "position": int(pow(n, max_len)),
-            "charset": charset,
-            "min_len": min_len,
-            "max_len": max_len,
-        },
+        "meta": {"mode": "bruteforce","algo": algo,},
+        "state": {"mode": "bruteforce","current_length": max_len,"position": int(pow(n, max_len)),"charset": charset,"min_len": min_len,"max_len": max_len,},
         "attempts": attempts,
         "updated_at": time.time(),
         "cracked": False,
         "hash": hash_str,
     })
     return None, attempts
-
-# --------------- Public API helpers (programmatic use) ---------------
-
 def config_id_from_params(hash_str: str, algo: str, mode: str, extras: str) -> str:
     base = f"{hash_str}|{algo}|{mode}|{extras}"
     hid = hashlib.sha1(base.encode("utf-8")).hexdigest()
     return hid[:12]
-
 def get_resume_default_path(hash_str: str, algo: str, mode: str, extras: str = "") -> str:
     return ResumeManager.make_default_path(config_id_from_params(hash_str, algo, mode, extras))
-
 def _ensure_algo(hash_str: str, algo: Optional[str]) -> str:
     if algo:
         detected = detect_hash_type(hash_str)
         if detected and detected != algo:
-            # still accept user-chosen algo
             pass
         ok, err = validate_hash(hash_str, algo)
         if not ok:
@@ -518,21 +378,7 @@ def _ensure_algo(hash_str: str, algo: Optional[str]) -> str:
     if not ok:
         raise ValueError(err or "Invalid hash format.")
     return detected
-
-def crack_wordlist(
-    hash_str: str,
-    wordlist_files: List[str],
-    algo: Optional[str] = None,
-    encoding: str = "utf-8",
-    progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
-    resume: bool = False,
-    resume_file: Optional[str] = None,
-    progress_interval: float = 0.0,
-) -> Tuple[Optional[str], int, Optional[str]]:
-    """
-    Programmatic wordlist cracking.
-    Returns: (password or None, attempts, resume_file_path)
-    """
+def crack_wordlist(hash_str: str, wordlist_files: List[str], algo: Optional[str] = None, encoding: str = "utf-8", progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None, resume: bool = False, resume_file: Optional[str] = None, progress_interval: float = 0.0) -> Tuple[Optional[str], int, Optional[str]]:
     algo_used = _ensure_algo(hash_str, algo)
     expanded: List[str] = []
     for p in wordlist_files:
@@ -553,34 +399,9 @@ def crack_wordlist(
     resume_mgr = ResumeManager(resume_path)
     resume_data = resume_mgr.load() if resume else None
     progress = Progress(total=None, interval_sec=progress_interval, mode="wordlist", callback=progress_callback)
-    found, attempts = wordlist_attack(
-        hash_str=hash_str,
-        algo=algo_used,
-        wordlist_paths=expanded,
-        encoding=encoding,
-        progress=progress,
-        resume=resume_data,
-        resume_mgr=resume_mgr,
-    )
+    found, attempts = wordlist_attack(hash_str=hash_str, algo=algo_used, wordlist_paths=expanded, encoding=encoding, progress=progress, resume=resume_data, resume_mgr=resume_mgr)
     return found, attempts, resume_mgr.resume_file
-
-def brute_force_crack(
-    hash_str: str,
-    algo: Optional[str] = None,
-    charset_spec: str = "lower,digits",
-    extra_chars: str = "",
-    min_length: int = 1,
-    max_length: int = 4,
-    encoding: str = "utf-8",
-    progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
-    resume: bool = False,
-    resume_file: Optional[str] = None,
-    progress_interval: float = 0.0,
-) -> Tuple[Optional[str], int, Optional[str]]:
-    """
-    Programmatic brute force cracking.
-    Returns: (password or None, attempts, resume_file_path)
-    """
+def brute_force_crack(hash_str: str, algo: Optional[str] = None, charset_spec: str = "lower,digits", extra_chars: str = "", min_length: int = 1, max_length: int = 4, encoding: str = "utf-8", progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None, resume: bool = False, resume_file: Optional[str] = None, progress_interval: float = 0.0) -> Tuple[Optional[str], int, Optional[str]]:
     algo_used = _ensure_algo(hash_str, algo)
     if min_length <= 0 or max_length <= 0 or min_length > max_length:
         raise ValueError("Invalid length range for brute force. Ensure 0 < min_length <= max_length.")
@@ -592,144 +413,53 @@ def brute_force_crack(
     resume_mgr = ResumeManager(resume_path)
     resume_data = resume_mgr.load() if resume else None
     progress = Progress(total=None, interval_sec=progress_interval, mode="bruteforce", callback=progress_callback)
-    found, attempts = brute_force_attack(
-        hash_str=hash_str,
-        algo=algo_used,
-        charset=charset,
-        min_len=min_length,
-        max_len=max_length,
-        encoding=encoding,
-        progress=progress,
-        resume=resume_data,
-        resume_mgr=resume_mgr,
-    )
+    found, attempts = brute_force_attack(hash_str=hash_str, algo=algo_used, charset=charset, min_len=min_length, max_len=max_length, encoding=encoding, progress=progress, resume=resume_data, resume_mgr=resume_mgr)
     return found, attempts, resume_mgr.resume_file
-
-# Convenience generic crack function
-def crack(
-    hash_str: str,
-    algo: Optional[str] = None,
-    wordlist_files: Optional[List[str]] = None,
-    bruteforce: bool = False,
-    charset_spec: str = "lower,digits",
-    extra_chars: str = "",
-    min_length: int = 1,
-    max_length: int = 4,
-    encoding: str = "utf-8",
-    progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
-    resume: bool = False,
-    resume_file: Optional[str] = None,
-    progress_interval: float = 0.0,
-) -> Tuple[Optional[str], int, Optional[str]]:
-    """
-    Generic crack entrypoint. Choose wordlist or bruteforce.
-    """
+def crack(hash_str: str, algo: Optional[str] = None, wordlist_files: Optional[List[str]] = None, bruteforce: bool = False, charset_spec: str = "lower,digits", extra_chars: str = "", min_length: int = 1, max_length: int = 4, encoding: str = "utf-8", progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None, resume: bool = False, resume_file: Optional[str] = None, progress_interval: float = 0.0, wordlist: Optional[Union[str, List[str]]] = None, charset: Optional[str] = None, method: Optional[str] = None) -> Tuple[Optional[str], int, Optional[str]]:
+    mode_hint = (method or "").strip().lower() if method else None
+    if charset:
+        charset_spec = charset
+    if wordlist is not None and wordlist_files is None:
+        if isinstance(wordlist, str):
+            wordlist_files = [wordlist]
+        elif isinstance(wordlist, (list, tuple)):
+            wordlist_files = list(wordlist)
+    if mode_hint == "wordlist" and not wordlist_files:
+        raise ValueError("Wordlist mode requested but no wordlist provided.")
+    if mode_hint == "bruteforce":
+        bruteforce = True
     if wordlist_files and bruteforce:
         raise ValueError("Specify either wordlist_files or bruteforce=True, not both.")
     if wordlist_files:
-        return crack_wordlist(
-            hash_str=hash_str,
-            wordlist_files=wordlist_files,
-            algo=algo,
-            encoding=encoding,
-            progress_callback=progress_callback,
-            resume=resume,
-            resume_file=resume_file,
-            progress_interval=progress_interval,
-        )
+        return crack_wordlist(hash_str=hash_str, wordlist_files=wordlist_files, algo=algo, encoding=encoding, progress_callback=progress_callback, resume=resume, resume_file=resume_file, progress_interval=progress_interval)
     elif bruteforce:
-        return brute_force_crack(
-            hash_str=hash_str,
-            algo=algo,
-            charset_spec=charset_spec,
-            extra_chars=extra_chars,
-            min_length=min_length,
-            max_length=max_length,
-            encoding=encoding,
-            progress_callback=progress_callback,
-            resume=resume,
-            resume_file=resume_file,
-            progress_interval=progress_interval,
-        )
+        return brute_force_crack(hash_str=hash_str, algo=algo, charset_spec=charset_spec, extra_chars=extra_chars, min_length=min_length, max_length=max_length, encoding=encoding, progress_callback=progress_callback, resume=resume, resume_file=resume_file, progress_interval=progress_interval)
     else:
-        raise ValueError("No attack mode specified. Provide wordlist_files or set bruteforce=True.")
-
-# A simple class-based interface for adapters
+        if mode_hint == "wordlist":
+            raise ValueError("No valid wordlist provided for wordlist mode.")
+        if mode_hint == "bruteforce":
+            raise ValueError("Bruteforce mode selected but not enabled.")
+        raise ValueError("No attack mode specified. Provide wordlist_files/wordlist or set bruteforce=True.")
 class HashCracker:
     def detect_hash(self, hash_str: str) -> Optional[str]:
         return detect_hash_type(hash_str)
-
     def detect_algorithm(self, hash_str: str) -> Optional[str]:
         return detect_hash_type(hash_str)
-
     def identify_hash(self, hash_str: str) -> Optional[str]:
         return detect_hash_type(hash_str)
-
-    def wordlist_crack(
-        self,
-        hash_str: str,
-        wordlist_files: List[str],
-        algo: Optional[str] = None,
-        encoding: str = "utf-8",
-        progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
-        resume: bool = False,
-        resume_file: Optional[str] = None,
-        progress_interval: float = 0.0,
-    ) -> Tuple[Optional[str], int, Optional[str]]:
-        return crack_wordlist(
-            hash_str=hash_str,
-            wordlist_files=wordlist_files,
-            algo=algo,
-            encoding=encoding,
-            progress_callback=progress_callback,
-            resume=resume,
-            resume_file=resume_file,
-            progress_interval=progress_interval,
-        )
-
-    def bruteforce_crack(
-        self,
-        hash_str: str,
-        algo: Optional[str] = None,
-        charset_spec: str = "lower,digits",
-        extra_chars: str = "",
-        min_length: int = 1,
-        max_length: int = 4,
-        encoding: str = "utf-8",
-        progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
-        resume: bool = False,
-        resume_file: Optional[str] = None,
-        progress_interval: float = 0.0,
-    ) -> Tuple[Optional[str], int, Optional[str]]:
-        return brute_force_crack(
-            hash_str=hash_str,
-            algo=algo,
-            charset_spec=charset_spec,
-            extra_chars=extra_chars,
-            min_length=min_length,
-            max_length=max_length,
-            encoding=encoding,
-            progress_callback=progress_callback,
-            resume=resume,
-            resume_file=resume_file,
-            progress_interval=progress_interval,
-        )
-
+    def wordlist_crack(self, hash_str: str, wordlist_files: List[str], algo: Optional[str] = None, encoding: str = "utf-8", progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None, resume: bool = False, resume_file: Optional[str] = None, progress_interval: float = 0.0) -> Tuple[Optional[str], int, Optional[str]]:
+        return crack_wordlist(hash_str=hash_str, wordlist_files=wordlist_files, algo=algo, encoding=encoding, progress_callback=progress_callback, resume=resume, resume_file=resume_file, progress_interval=progress_interval)
+    def bruteforce_crack(self, hash_str: str, algo: Optional[str] = None, charset_spec: str = "lower,digits", extra_chars: str = "", min_length: int = 1, max_length: int = 4, encoding: str = "utf-8", progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None, resume: bool = False, resume_file: Optional[str] = None, progress_interval: float = 0.0) -> Tuple[Optional[str], int, Optional[str]]:
+        return brute_force_crack(hash_str=hash_str, algo=algo, charset_spec=charset_spec, extra_chars=extra_chars, min_length=min_length, max_length=max_length, encoding=encoding, progress_callback=progress_callback, resume=resume, resume_file=resume_file, progress_interval=progress_interval)
     def crack(self, *args, **kwargs):
         return crack(*args, **kwargs)
-
-# --------------- Main CLI ---------------
-
 def main():
-    parser = argparse.ArgumentParser(
-        description="Hash Cracker Suite: Multi-algorithm hash cracking tool with wordlist and brute force attacks"
-    )
+    parser = argparse.ArgumentParser(description="Hash Cracker Suite: Multi-algorithm hash cracking tool with wordlist and brute force attacks")
     parser.add_argument("--hash", dest="hash_str", required=True, help="Target hash to crack")
     parser.add_argument("--algo", choices=["md5", "sha1", "sha256", "sha512", "bcrypt"], help="Hash algorithm. If omitted, tool will try to detect.")
     mode_group = parser.add_mutually_exclusive_group(required=True)
     mode_group.add_argument("--wordlist", nargs="+", help="Wordlist file(s) for dictionary attack")
     mode_group.add_argument("--bruteforce", action="store_true", help="Enable brute force mode")
-
     parser.add_argument("--encoding", default="utf-8", help="Encoding for wordlists (default: utf-8)")
     parser.add_argument("--progress-interval", type=float, default=1.0, help="Progress update interval in seconds")
     parser.add_argument("--resume", action="store_true", default=False, help="Resume from saved state and save progress")
@@ -737,18 +467,13 @@ def main():
     parser.add_argument("--reset-resume", action="store_true", help="Reset (delete) resume state before starting")
     parser.add_argument("--save-results", help="File to append cracked results (hash:password) on success")
     parser.add_argument("--quiet", action="store_true", help="Suppress ethical warning banner")
-
-    # Brute force options
     parser.add_argument("--charset", default="lower,digits", help="Character set spec: lower,upper,digits,symbols or literal chars separated by commas")
     parser.add_argument("--extra-chars", default="", help="Additional characters to include in charset")
     parser.add_argument("--min-length", type=int, default=1, help="Minimum password length for brute force")
     parser.add_argument("--max-length", type=int, default=4, help="Maximum password length for brute force")
-
     args = parser.parse_args()
-
     if not args.quiet:
         eprint(ETHICAL_WARNING)
-
     hash_str = args.hash_str.strip()
     algo = args.algo
     detected = detect_hash_type(hash_str)
@@ -759,24 +484,18 @@ def main():
         algo = detected
         eprint(f"[i] Detected hash algorithm: {algo}")
     else:
-        # If user specified and detection differs (for non-bcrypt), warn
         if detected and detected != algo:
             eprint(f"[!] Warning: hash format suggests '{detected}', but --algo is '{algo}'. Proceeding with '{algo}'.")
-
     ok, err = validate_hash(hash_str, algo)
     if not ok:
         eprint(f"[!] {err}")
         sys.exit(2)
-
     if algo == "bcrypt" and not HAS_BCRYPT:
         eprint("[!] bcrypt algorithm requested but 'bcrypt' library is not installed. Install with: pip install bcrypt")
-
     mode = "wordlist" if args.wordlist else "bruteforce"
-
     extras = ""
     if mode == "wordlist":
         wl_paths = args.wordlist
-        # Expand directory to files if necessary
         expanded: List[str] = []
         for p in wl_paths:
             if os.path.isdir(p):
@@ -802,52 +521,27 @@ def main():
         if args.min_length <= 0 or args.max_length <= 0 or args.min_length > args.max_length:
             eprint("[!] Invalid length range for brute force. Ensure 0 < min <= max.")
             sys.exit(2)
-        # Warn if search space is enormous
         space = brute_force_totals(len(charset), args.min_length, args.max_length)
         if space > 10_000_000:
             eprint(f"[!] Caution: brute force search space is large: {space:,} candidates.")
         extras = f"charset={charset}|min={args.min_length}|max={args.max_length}"
-
     cfg_id = config_id_from_params(hash_str, algo, mode, extras)
     resume_path = args.resume_file if args.resume_file else (ResumeManager.make_default_path(cfg_id) if args.resume else None)
     resume_mgr = ResumeManager(resume_path)
-
     if args.reset_resume and resume_mgr.resume_file:
         resume_mgr.reset()
         eprint(f"[i] Cleared resume state at {resume_mgr.resume_file}")
-
     resume_data = resume_mgr.load() if args.resume else None
     if args.resume and resume_mgr.resume_file:
         eprint(f"[i] Resume file: {resume_mgr.resume_file}")
-
     progress = Progress(total=None, interval_sec=args.progress_interval, mode=mode)
-
     cracked = None
     attempts = 0
-
     try:
         if mode == "wordlist":
-            cracked, attempts = wordlist_attack(
-                hash_str=hash_str,
-                algo=algo,
-                wordlist_paths=args.wordlist,
-                encoding=args.encoding,
-                progress=progress,
-                resume=resume_data,
-                resume_mgr=resume_mgr,
-            )
+            cracked, attempts = wordlist_attack(hash_str=hash_str, algo=algo, wordlist_paths=args.wordlist, encoding=args.encoding, progress=progress, resume=resume_data, resume_mgr=resume_mgr)
         else:
-            cracked, attempts = brute_force_attack(
-                hash_str=hash_str,
-                algo=algo,
-                charset=parse_charset(args.charset, args.extra_chars),
-                min_len=args.min_length,
-                max_len=args.max_length,
-                encoding=args.encoding,
-                progress=progress,
-                resume=resume_data,
-                resume_mgr=resume_mgr,
-            )
+            cracked, attempts = brute_force_attack(hash_str=hash_str, algo=algo, charset=parse_charset(args.charset, args.extra_chars), min_len=args.min_length, max_len=args.max_length, encoding=args.encoding, progress=progress, resume=resume_data, resume_mgr=resume_mgr)
     except KeyboardInterrupt:
         eprint("[!] Cracking interrupted by user.")
         sys.exit(130)
@@ -857,7 +551,6 @@ def main():
     except Exception as ex:
         eprint(f"[!] Unexpected error: {ex}")
         sys.exit(1)
-
     if cracked is not None:
         print(f"Cracked: {cracked}")
         if args.save_results:
@@ -870,6 +563,5 @@ def main():
     else:
         eprint(f"[i] Password not found. Attempts: {attempts}")
         sys.exit(3)
-
 if __name__ == "__main__":
     main()
