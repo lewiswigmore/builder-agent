@@ -84,7 +84,7 @@ security_tools:
   - Identify cipher suites in use
   - Flag weak encryption algorithms
   ready: true
-  status: todo
+  status: needs_work
   area_allowlist:
   - tools/vuln/cert_inspector.py
   - tests/test_vuln_002.py
