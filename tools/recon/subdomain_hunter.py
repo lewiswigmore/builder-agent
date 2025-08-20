@@ -21,7 +21,6 @@ License: For authorized testing and educational purposes only.
 import argparse
 import concurrent.futures
 import json
-import os
 import random
 import re
 import socket
@@ -29,7 +28,13 @@ import string
 import sys
 import threading
 import time
-from typing import Iterable, List, Optional, Set, Tuple
+from typing import Iterable, List, Optional, Set, Tuple, Dict
+
+try:
+    import requests  # type: ignore
+except Exception:  # pragma: no cover
+    requests = None  # fallback to urllib if needed
+
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
@@ -95,7 +100,6 @@ def parse_wordlist(path: Optional[str]) -> List[str]:
                     w = line.strip().lower()
                     if not w or w.startswith("#"):
                         continue
-                    # label must be valid DNS label
                     if VALID_LABEL_RE.match(w):
                         words.append(w)
         except FileNotFoundError:
@@ -112,7 +116,6 @@ def parse_wordlist(path: Optional[str]) -> List[str]:
 # -------------------------
 
 def _getaddrinfo_threadsafe(host: str) -> List[Tuple]:
-    # Do not set global default timeout; wrap in thread with timeout instead
     return socket.getaddrinfo(host, None, proto=socket.IPPROTO_TCP)
 
 
@@ -136,7 +139,6 @@ def resolve_host(host: str, timeout: float = 3.0) -> Set[str]:
             if family == socket.AF_INET:
                 ips.add(sockaddr[0])
             elif family == socket.AF_INET6:
-                # normalize IPv6
                 ips.add(sockaddr[0])
         except Exception:
             continue
@@ -158,9 +160,7 @@ def detect_wildcard(domain: str, tries: int = 5, timeout: float = 3.0) -> Tuple[
         if ips:
             success += 1
             ips_union.update(ips)
-        # short sleep to avoid hammering resolvers
-        time.sleep(0.05)
-    # heuristic: wildcard if >= 2 random labels resolved
+        time.sleep(0.02)
     is_wild = success >= 2
     return is_wild, ips_union
 
@@ -184,8 +184,7 @@ def dns_bruteforce(domain: str, words: Iterable[str], concurrency: int = 100,
         if not ips:
             return None
         if wildcard_ips:
-            # If all resolved IPs are within wildcard IPs, likely wildcard hit; skip.
-            if ips and ips.issubset(wildcard_ips):
+            if ips.issubset(wildcard_ips):
                 return None
         return host
 
@@ -203,38 +202,80 @@ def dns_bruteforce(domain: str, words: Iterable[str], concurrency: int = 100,
 
 
 # -------------------------
+# HTTP helpers
+# -------------------------
+
+def http_get(url: str, timeout: float = 8.0, headers: Optional[dict] = None) -> str:
+    hdrs = headers or {"User-Agent": USER_AGENT}
+    # Prefer requests if available (tests patch requests)
+    if requests is not None:
+        try:
+            r = requests.get(url, headers=hdrs, timeout=timeout)
+            return getattr(r, "text", "") or ""
+        except Exception as e:
+            warn(f"[!] HTTP GET failed for {url}: {e}")
+            return ""
+    # Fallback to urllib
+    req = Request(url, headers=hdrs)
+    try:
+        with urlopen(req, timeout=timeout) as resp:
+            content_type = resp.headers.get("Content-Type", "")
+            data = resp.read()
+            charset = "utf-8"
+            m = re.search(r"charset=([A-Za-z0-9_\-]+)", content_type)
+            if m:
+                charset = m.group(1)
+            return data.decode(charset, errors="ignore")
+    except Exception as e:
+        warn(f"[!] HTTP GET failed for {url}: {e}")
+        return ""
+
+
+def http_get_json(url: str, timeout: float = 10.0, headers: Optional[dict] = None):
+    hdrs = headers or {"User-Agent": USER_AGENT}
+    if requests is not None:
+        try:
+            r = requests.get(url, headers=hdrs, timeout=timeout)
+            try:
+                return r.json()
+            except Exception:
+                txt = getattr(r, "text", "") or ""
+                return json.loads(txt) if txt else None
+        except Exception as e:
+            warn(f"[!] HTTP JSON fetch failed for {url}: {e}")
+            return None
+    # Fallback to urllib
+    req = Request(url, headers=hdrs)
+    try:
+        with urlopen(req, timeout=timeout) as resp:
+            data = resp.read()
+            txt = data.decode("utf-8", errors="ignore")
+            return json.loads(txt)
+    except Exception as e:
+        warn(f"[!] HTTP JSON fetch failed for {url}: {e}")
+        return None
+
+
+# -------------------------
 # Certificate Transparency
 # -------------------------
 
-def fetch_ct_subdomains(domain: str, timeout: float = 10.0) -> Set[str]:
+def fetch_crtsh_subdomains(domain: str, timeout: float = 10.0) -> Set[str]:
     """
     Query crt.sh for subdomains using its JSON interface.
     """
     domain = normalize_host(domain)
     out: Set[str] = set()
-    # encode "%.{domain}" as q parameter
     url = f"https://crt.sh/?{urlencode({'q': f'%.{domain}', 'output': 'json'})}"
-    req = Request(url, headers={"User-Agent": USER_AGENT})
-    try:
-        with urlopen(req, timeout=timeout) as resp:
-            data = resp.read()
-    except Exception as e:
-        warn(f"[!] CT fetch failed: {e}")
+    data = http_get(url, timeout=timeout, headers={"User-Agent": USER_AGENT})
+    items: List[Dict] = []
+    if not data:
         return out
-    # crt.sh may return multiple JSON objects without being wrapped; handle that
-    # Attempt to decode as JSON list first, else try to split on }{ boundaries.
-    text = ""
     try:
-        text = data.decode("utf-8", errors="ignore")
-        parsed = json.loads(text)
+        parsed = json.loads(data)
         items = parsed if isinstance(parsed, list) else [parsed]
     except Exception:
-        # Fallback: split concatenated JSON
-        parts = re.split(r"}\s*{", text.strip().strip("\n"))
-        if not parts:
-            return out
-        # reconstruct each JSON with braces
-        items = []
+        parts = re.split(r"}\s*{", data.strip().strip("\n"))
         for i, part in enumerate(parts):
             if not part:
                 continue
@@ -253,7 +294,6 @@ def fetch_ct_subdomains(domain: str, timeout: float = 10.0) -> Set[str]:
             continue
         for raw in str(name_val).split("\n"):
             host = str(raw).strip().lower().rstrip(".")
-            # filter wildcard entries like *.example.com
             host = host.lstrip("*.").lstrip("*.").lstrip("%.")
             if not host:
                 continue
@@ -262,6 +302,54 @@ def fetch_ct_subdomains(domain: str, timeout: float = 10.0) -> Set[str]:
             if not is_valid_hostname(host):
                 continue
             out.add(host)
+    return out
+
+
+def fetch_certspotter_subdomains(domain: str, timeout: float = 10.0) -> Set[str]:
+    """
+    Query CertSpotter API for subdomains.
+    """
+    domain = normalize_host(domain)
+    out: Set[str] = set()
+    url = "https://api.certspotter.com/v1/issuances?" + urlencode({
+        "domain": domain,
+        "include_subdomains": "true",
+        "expand": "dns_names",
+    })
+    data = http_get_json(url, timeout=timeout, headers={"User-Agent": USER_AGENT})
+    if not data:
+        return out
+    try:
+        for item in data if isinstance(data, list) else [data]:
+            dns_names = item.get("dns_names") if isinstance(item, dict) else None
+            if not dns_names:
+                continue
+            for raw in dns_names:
+                host = str(raw or "").strip().lower().rstrip(".")
+                host = host.lstrip("*.").lstrip("%.")
+                if not host or not is_subdomain_of(host, domain) or not is_valid_hostname(host):
+                    continue
+                out.add(host)
+    except Exception:
+        return out
+    return out
+
+
+def fetch_ct_subdomains(domain: str, timeout: float = 10.0) -> Set[str]:
+    """
+    Aggregate CT sources (crt.sh, CertSpotter).
+    """
+    out: Set[str] = set()
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as ex:
+        futs = [
+            ex.submit(fetch_crtsh_subdomains, domain, timeout),
+            ex.submit(fetch_certspotter_subdomains, domain, timeout),
+        ]
+        for fut in concurrent.futures.as_completed(futs):
+            try:
+                out.update(fut.result() or set())
+            except Exception as e:
+                warn(f"[!] CT fetch failed: {e}")
     return out
 
 
@@ -274,28 +362,9 @@ def extract_hosts_from_text(text: str, domain: str) -> Set[str]:
     Extract domain-like strings from arbitrary text for a given domain suffix.
     """
     domain = re.escape(normalize_host(domain))
-    # match labels followed by the target domain
     pattern = re.compile(rf"\b([a-z0-9](?:[a-z0-9-]{{0,61}}[a-z0-9])?\.)+{domain}\b", re.IGNORECASE)
     found = set(m.group(0).lower().rstrip(".") for m in pattern.finditer(text or ""))
-    # filter invalid labels if any
     return set(h for h in found if is_valid_hostname(h))
-
-
-def http_get(url: str, timeout: float = 8.0, headers: Optional[dict] = None) -> str:
-    req = Request(url, headers=headers or {"User-Agent": USER_AGENT})
-    try:
-        with urlopen(req, timeout=timeout) as resp:
-            content_type = resp.headers.get("Content-Type", "")
-            data = resp.read()
-            # Decode based on charset if present
-            charset = "utf-8"
-            m = re.search(r"charset=([A-Za-z0-9_\-]+)", content_type)
-            if m:
-                charset = m.group(1)
-            return data.decode(charset, errors="ignore")
-    except Exception as e:
-        warn(f"[!] HTTP GET failed for {url}: {e}")
-        return ""
 
 
 def search_duckduckgo(domain: str, pages: int = 3, timeout: float = 8.0) -> Set[str]:
@@ -303,21 +372,18 @@ def search_duckduckgo(domain: str, pages: int = 3, timeout: float = 8.0) -> Set[
     Use DuckDuckGo HTML endpoint for site dorking. Parses resulting HTML for subdomains.
     """
     domain = normalize_host(domain)
-    # Query attempts to find subdomains; avoid direct scraping heavy patterns
-    # We'll search for "site:domain -www.domain"
     out: Set[str] = set()
     base = "https://duckduckgo.com/html/"
     for i in range(pages):
         q = f"site:{domain} -www.{domain}"
         params = {"q": q, "s": str(i * 50)}
         url = base + "?" + urlencode(params)
-        html = http_get(url, timeout=timeout)
+        html = http_get(url, timeout=timeout, headers={"User-Agent": USER_AGENT})
         if not html:
             continue
         hosts = extract_hosts_from_text(html, domain)
         out.update(hosts)
-        # be nice
-        time.sleep(0.5)
+        time.sleep(0.1)
     return out
 
 
@@ -332,18 +398,17 @@ def search_bing(domain: str, pages: int = 3, timeout: float = 8.0) -> Set[str]:
         q = f"site:{domain} -www.{domain}"
         params = {"q": q, "first": str(i * 10 + 1)}
         url = base + "?" + urlencode(params)
-        html = http_get(url, timeout=timeout)
+        html = http_get(url, timeout=timeout, headers={"User-Agent": USER_AGENT})
         if not html:
             continue
         hosts = extract_hosts_from_text(html, domain)
         out.update(hosts)
-        time.sleep(0.5)
+        time.sleep(0.1)
     return out
 
 
 def fetch_search_engine_subdomains(domain: str, timeout: float = 8.0, pages: int = 3) -> Set[str]:
     out = set()
-    # Run in parallel to reduce time
     with concurrent.futures.ThreadPoolExecutor(max_workers=2) as ex:
         futs = [
             ex.submit(search_duckduckgo, domain, pages, timeout),
@@ -351,7 +416,7 @@ def fetch_search_engine_subdomains(domain: str, timeout: float = 8.0, pages: int
         ]
         for fut in concurrent.futures.as_completed(futs):
             try:
-                out.update(fut.result())
+                out.update(fut.result() or set())
             except Exception as e:
                 warn(f"[!] Search engine fetch failed: {e}")
     return out
@@ -386,11 +451,23 @@ def enumerate_subdomains(
         warn("For authorized security testing only. Ensure you have permission.")
         warn("")
 
+    # Validate domain
+    if "." not in domain or not is_valid_hostname(domain):
+        return set(), {
+            "domain": domain,
+            "count": 0,
+            "wildcard_detected": False,
+            "wildcard_ips": [],
+            "sources": sources,
+            "timestamps": {"completed": int(time.time())},
+            "error": "invalid_domain",
+        }
+
     # wildcard detection
     wildcard_detected, wildcard_ips = detect_wildcard(domain, tries=5, timeout=timeout)
-    if wildcard_detected:
+    if wildcard_detected and not quiet:
         warn(f"[i] Wildcard DNS appears to be enabled. Filtering by IPs: {', '.join(sorted(wildcard_ips)) or 'unknown'}")
-    else:
+    elif not quiet:
         warn("[i] No wildcard DNS detected.")
 
     # Prepare wordlist
@@ -408,7 +485,6 @@ def enumerate_subdomains(
             tasks.append(("ct", ex.submit(fetch_ct_subdomains, domain)))
         if use_se:
             tasks.append(("se", ex.submit(fetch_search_engine_subdomains, domain)))
-        # DNS brute after we might learn candidates from CT/SE (merge later)
         dns_result: Set[str] = set()
         if use_dns:
             dns_result = dns_bruteforce(
@@ -420,7 +496,6 @@ def enumerate_subdomains(
             )
             sources["dns"] = True
             results.update(dns_result)
-        # collect CT/SE
         for tag, fut in tasks:
             try:
                 data = fut.result(timeout=30.0)
@@ -445,11 +520,12 @@ def enumerate_subdomains(
                 continue
             if not is_valid_hostname(h):
                 continue
-            if wildcard_detected and resolve_host(h, timeout=timeout).issubset(wildcard_ips):
-                continue
+            if wildcard_detected:
+                res_ips = resolve_host(h, timeout=timeout)
+                if res_ips and res_ips.issubset(wildcard_ips):
+                    continue
             results.add(h)
 
-    # De-duplicate and ensure unique valid subdomains only
     valid_results = set(h for h in results if is_subdomain_of(h, domain) and is_valid_hostname(h))
 
     meta = {
@@ -463,6 +539,61 @@ def enumerate_subdomains(
 
     return valid_results, meta
 
+
+# -------------------------
+# Public API (runner compatibility)
+# -------------------------
+
+class SubdomainHunter:
+    """
+    Class-based API for tests/integration.
+    """
+
+    def run(self, domain: str, **kwargs) -> Tuple[Set[str], dict]:
+        """
+        Execute enumeration. Returns (subdomains, meta).
+        """
+        return enumerate_subdomains(
+            domain=domain,
+            wordlist_path=kwargs.get("wordlist_path") or kwargs.get("wordlist"),
+            threads=int(kwargs.get("threads", 100)),
+            timeout=float(kwargs.get("timeout", 3.0)),
+            use_dns=bool(kwargs.get("use_dns", kwargs.get("dns", True))),
+            use_ct=bool(kwargs.get("use_ct", kwargs.get("ct", True))),
+            use_se=bool(kwargs.get("use_se", kwargs.get("se", True))),
+            limit=kwargs.get("limit"),
+            quiet=bool(kwargs.get("quiet", False)),
+        )
+
+    # alias
+    def hunt(self, domain: str, **kwargs) -> Tuple[Set[str], dict]:
+        return self.run(domain, **kwargs)
+
+
+def find_subdomains(domain: str, **kwargs) -> Set[str]:
+    subs, _ = SubdomainHunter().run(domain, **kwargs)
+    return subs
+
+
+def hunt_subdomains(domain: str, **kwargs) -> Tuple[Set[str], dict]:
+    return SubdomainHunter().run(domain, **kwargs)
+
+
+def run(domain: str, **kwargs) -> Tuple[Set[str], dict]:
+    return SubdomainHunter().run(domain, **kwargs)
+
+
+def hunt(domain: str, **kwargs) -> Tuple[Set[str], dict]:
+    return SubdomainHunter().run(domain, **kwargs)
+
+
+def search(domain: str, **kwargs) -> Tuple[Set[str], dict]:
+    return SubdomainHunter().run(domain, **kwargs)
+
+
+# -------------------------
+# CLI
+# -------------------------
 
 def main():
     parser = argparse.ArgumentParser(
@@ -481,7 +612,6 @@ def main():
 
     args = parser.parse_args()
 
-    # Gracefully handle invalid domain
     domain = normalize_host(args.domain)
     if "." not in domain or not is_valid_hostname(domain):
         warn(f"[!] Invalid domain: {args.domain}")
@@ -506,12 +636,10 @@ def main():
         warn(f"[!] Fatal error: {e}")
         sys.exit(1)
 
-    # Output
     if args.json:
         out = {"meta": meta, "subdomains": sorted(list(subs))}
         print(json.dumps(out, indent=2))
     else:
-        # print only subdomains to stdout; warnings and info to stderr
         for s in sorted(subs):
             print(s)
 
