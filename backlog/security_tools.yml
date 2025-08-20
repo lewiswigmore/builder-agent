@@ -1,0 +1,155 @@
+security_tools:
+- id: RECON-001
+  title: Advanced Port Scanner
+  category: reconnaissance
+  description: Multi-threaded port scanner with service detection, banner grabbing,
+    and vulnerability hints
+  security_requirements:
+  - TCP and UDP port scanning capabilities
+  - Service version detection and banner grabbing
+  - Rate limiting to avoid detection
+  - Output in multiple formats (JSON, XML, CSV)
+  - Stealth scanning techniques
+  acceptance_tests:
+  - Scan common ports (1-1000) on localhost successfully
+  - Detect SSH service on port 22 with banner
+  - Export results to JSON format
+  - Handle rate limiting parameters
+  ready: true
+  status: in_progress
+  area_allowlist:
+  - tools/recon/port_scanner.py
+  - tools/recon/__init__.py
+  - tests/test_recon_001.py
+  max_changed_lines: 400
+- id: RECON-002
+  title: Subdomain Hunter
+  category: reconnaissance
+  description: Intelligent subdomain enumeration using multiple techniques (DNS, certificates,
+    search engines)
+  security_requirements:
+  - DNS brute force with common wordlists
+  - Certificate transparency log searching
+  - Search engine dorking for subdomains
+  - Wildcard detection and filtering
+  - Concurrent processing for speed
+  acceptance_tests:
+  - Find at least 5 subdomains for a test domain
+  - Detect wildcard DNS configurations
+  - Output unique, valid subdomains only
+  - Handle timeouts gracefully
+  ready: true
+  status: todo
+  area_allowlist:
+  - tools/recon/subdomain_hunter.py
+  - tools/recon/wordlists/
+  - tests/test_recon_002.py
+  max_changed_lines: 500
+- id: VULN-001
+  title: Hash Cracker Suite
+  category: vulnerability
+  description: Multi-algorithm hash cracking tool with wordlist and brute force attacks
+  security_requirements:
+  - Support MD5, SHA1, SHA256, SHA512, bcrypt
+  - Wordlist-based attacks with custom lists
+  - Brute force with character sets
+  - Hash format detection
+  - Progress tracking and resume capability
+  acceptance_tests:
+  - Crack MD5 hash of 'password' using rockyou wordlist sample
+  - Detect hash algorithm automatically
+  - Show progress during cracking attempts
+  - Handle invalid hash formats gracefully
+  ready: true
+  status: todo
+  area_allowlist:
+  - tools/vuln/hash_cracker.py
+  - tools/vuln/wordlists/
+  - tests/test_vuln_001.py
+  max_changed_lines: 600
+- id: VULN-002
+  title: SSL/TLS Certificate Inspector
+  category: vulnerability
+  description: Comprehensive SSL/TLS certificate security analysis and vulnerability
+    detection
+  security_requirements:
+  - Certificate chain validation
+  - Weak cipher suite detection
+  - Certificate expiration warnings
+  - Common SSL vulnerabilities (Heartbleed, POODLE, etc.)
+  - Certificate transparency log verification
+  acceptance_tests:
+  - Analyze certificate for https://www.google.com
+  - Detect certificate expiration date
+  - Identify cipher suites in use
+  - Flag weak encryption algorithms
+  ready: true
+  status: todo
+  area_allowlist:
+  - tools/vuln/cert_inspector.py
+  - tests/test_vuln_002.py
+  max_changed_lines: 450
+- id: HUNT-001
+  title: Security Log Analyzer
+  category: threat_hunting
+  description: Advanced log analysis tool for detecting security events and anomalies
+  security_requirements:
+  - Parse multiple log formats (syslog, JSON, CSV)
+  - Pattern matching for known attack signatures
+  - Anomaly detection using statistical analysis
+  - IOC (Indicators of Compromise) correlation
+  - Timeline analysis and event correlation
+  acceptance_tests:
+  - Parse sample Apache access logs successfully
+  - Detect SQL injection attempts in logs
+  - Identify suspicious IP addresses
+  - Generate security event timeline
+  ready: true
+  status: todo
+  area_allowlist:
+  - tools/threat_hunt/log_analyzer.py
+  - tools/threat_hunt/signatures/
+  - tests/test_hunt_001.py
+  max_changed_lines: 700
+- id: NET-001
+  title: Network Traffic Analyzer
+  category: network
+  description: Real-time network packet analysis with security-focused detection capabilities
+  security_requirements:
+  - Live packet capture using pcap
+  - Protocol analysis (HTTP, DNS, TCP, UDP)
+  - Malicious payload detection
+  - Network flow analysis
+  - Export PCAP files for further analysis
+  acceptance_tests:
+  - Capture packets from network interface
+  - Detect HTTP requests in traffic
+  - Identify potential malicious domains
+  - Export captured data to PCAP format
+  ready: false
+  status: todo
+  area_allowlist:
+  - tools/network/traffic_analyzer.py
+  - tests/test_net_001.py
+  max_changed_lines: 550
+- id: CRYPTO-001
+  title: Encryption Utility Suite
+  category: cryptography
+  description: Comprehensive encryption/decryption tool with multiple cipher support
+  security_requirements:
+  - AES encryption/decryption with multiple modes
+  - RSA key generation and operations
+  - Secure random key generation
+  - File encryption with integrity verification
+  - Password-based key derivation (PBKDF2)
+  acceptance_tests:
+  - Encrypt and decrypt a test file successfully
+  - Generate secure RSA key pairs
+  - Verify file integrity after encryption/decryption
+  - Handle password-based encryption
+  ready: true
+  status: todo
+  area_allowlist:
+  - tools/crypto/encryption_suite.py
+  - tests/test_crypto_001.py
+  max_changed_lines: 500
