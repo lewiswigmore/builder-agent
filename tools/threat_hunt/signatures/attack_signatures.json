@@ -1,0 +1,34 @@
+[
+  {
+    "name": "SQL Injection - Union Select",
+    "pattern": "(?i)union\\s+(?:all\\s+)?select\\b"
+  },
+  {
+    "name": "SQL Injection - Boolean",
+    "pattern": "(?i)(?:\\bor\\b|\\band\\b)\\s+\\d+\\s*=\\s*\\d+"
+  },
+  {
+    "name": "SQL Injection - tautology 1=1",
+    "pattern": "(?i)1\\s*=\\s*1"
+  },
+  {
+    "name": "SQL Injection - Comment",
+    "pattern": "(?i)(?:--|#|/\\*)\\s*$"
+  },
+  {
+    "name": "SQL Injection - Sleep/Benchmark",
+    "pattern": "(?i)\\b(?:sleep|benchmark)\\s*\\("
+  },
+  {
+    "name": "Path Traversal",
+    "pattern": "(?i)(?:\\.\\./|%2e%2e%2f)"
+  },
+  {
+    "name": "XSS - Script Tag",
+    "pattern": "(?i)<\\s*script\\b"
+  },
+  {
+    "name": "Command Injection",
+    "pattern": "(?i)[;&|]\\s*(?:sh|bash|nc|curl|wget|python|perl|php|cat|ls|whoami)\\b"
+  }
+]
