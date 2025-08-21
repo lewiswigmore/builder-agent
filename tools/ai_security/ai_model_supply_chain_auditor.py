@@ -425,7 +425,7 @@ def iter_image_dataset(dataset_path: Path) -> List[Path]:
     return imgs
 
 
-def detect_image_corner_trigger(img: Image.Image) -> bool:
+def detect_image_corner_trigger(img) -> bool:
     # Detect a bright, uniform square in top-left corner as a common backdoor trigger
     w, h = img.size
     if w < 8 or h < 8:
@@ -450,7 +450,20 @@ def scan_trojan(dataset_path: Path, model_dir: Optional[Path] = None, threshold:
     text_items = iter_text_dataset(dataset_path)
     for text, label, src in text_items:
         total += 1
-        is_trig, info = detect_text_trigger(text)
+        try:
+            is_trig, info = detect_text_trigger(text)
+        except Exception as e:
+            # Robust error handling: log and continue
+            findings.append(Finding(
+                component=str(src),
+                category="trojan-scan",
+                severity="medium",
+                message=f"Error during text trigger detection: {e}",
+                confidence="low",
+                code="TRJN-ERROR",
+                evidence={"trace": traceback.format_exc()}
+            ))
+            is_trig = False
         if label:
             label_counts[label] = label_counts.get(label, 0) + 1
         if is_trig:
