@@ -258,7 +258,7 @@ def encrypt_file(input_path: str, output_path: str, *, password: Optional[str] =
             if len(key) == 64:
                 enc_key, mac_key = key[:32], key[32:]
             else:
-                # accept single key; derive MAC key later using HKDF with IV
+                # accept single key; derive MAC key later using HKDF with the IV
                 enc_key = key if len(key) in (16, 24, 32) else None
                 if enc_key is None:
                     raise ValueError("Invalid key length")
@@ -271,7 +271,6 @@ def encrypt_file(input_path: str, output_path: str, *, password: Optional[str] =
 
     temp_cipher_fd, temp_cipher_path = tempfile.mkstemp(prefix="encsuite_", suffix=".bin")
     os.close(temp_cipher_fd)
-    hmac_ctx = hmac.HMAC(mac_key, hashes.SHA256()) if (mac_key is not None and mode != "GCM") else None
 
     try:
         with open(input_path, "rb") as fin, open(temp_cipher_path, "wb") as ftemp:
@@ -286,30 +285,47 @@ def encrypt_file(input_path: str, output_path: str, *, password: Optional[str] =
                 meta = _build_metadata_dict(mode, iv, aad, "pbkdf2" if password else None, salt, iterations if password else None, tag, None)
             else:
                 encryptor = _new_cipher(enc_key, mode, iv).encryptor()
+                hmac_ctx = hmac.HMAC(mac_key, hashes.SHA256()) if mac_key is not None else None
+                if hmac_ctx is not None:
+                    hmac_ctx.update(iv)
+
                 if mode == "CBC":
                     padder = sympadding.PKCS7(128).padder()
                     for chunk in iter(lambda: fin.read(chunk_size), b""):
-                        padded = padder.update(chunk)
-                        if padded:
-                            ftemp.write(encryptor.update(padded))
+                        data = padder.update(chunk)
+                        if data:
+                            ct = encryptor.update(data)
+                            if ct:
+                                ftemp.write(ct)
+                                if hmac_ctx is not None:
+                                    hmac_ctx.update(ct)
                     final_padded = padder.finalize()
                     if final_padded:
-                        ftemp.write(encryptor.update(final_padded))
-                    ftemp.write(encryptor.finalize())
+                        ct = encryptor.update(final_padded)
+                        if ct:
+                            ftemp.write(ct)
+                            if hmac_ctx is not None:
+                                hmac_ctx.update(ct)
+                    ct_final = encryptor.finalize()
+                    if ct_final:
+                        ftemp.write(ct_final)
+                        if hmac_ctx is not None:
+                            hmac_ctx.update(ct_final)
                 else:
                     # CTR/CFB
                     for chunk in iter(lambda: fin.read(chunk_size), b""):
-                        ftemp.write(encryptor.update(chunk))
-                    ftemp.write(encryptor.finalize())
-                # compute HMAC over iv || ciphertext
-                if hmac_ctx:
-                    hmac_ctx.update(iv)
-                    with open(temp_cipher_path, "rb") as ctfin:
-                        for chunk in iter(lambda: ctfin.read(chunk_size), b""):
-                            hmac_ctx.update(chunk)
-                    hmac_value = hmac_ctx.finalize()
-                else:
-                    hmac_value = None
+                        ct = encryptor.update(chunk)
+                        if ct:
+                            ftemp.write(ct)
+                            if hmac_ctx is not None:
+                                hmac_ctx.update(ct)
+                    ct_final = encryptor.finalize()
+                    if ct_final:
+                        ftemp.write(ct_final)
+                        if hmac_ctx is not None:
+                            hmac_ctx.update(ct_final)
+
+                hmac_value = hmac_ctx.finalize() if hmac_ctx is not None else None
                 meta = _build_metadata_dict(mode, iv, aad, "pbkdf2" if password else None, salt, iterations if password else None, None, hmac_value)
 
         # Write final output: header + meta + ciphertext
