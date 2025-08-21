@@ -603,6 +603,30 @@ class AnomalyDetector:
                 if "Rare user-agent" not in anomalies[ev.src_ip]["reasons"]:
                     anomalies[ev.src_ip]["reasons"].append("Rare user-agent")
 
+        # Detect traffic spike within a short time window (per-minute burst detection)
+        # Group events per IP per minute and flag if any minute has unusually high count
+        BURST_THRESHOLD_PER_MINUTE = 20  # conservative absolute threshold
+        for ip, lst in per_ip.items():
+            if not lst:
+                continue
+            buckets = defaultdict(int)
+            for ev in lst:
+                ts = ev.timestamp
+                try:
+                    minute = ts.replace(second=0, microsecond=0)
+                except Exception:
+                    # If timestamp is malformed, skip
+                    continue
+                buckets[minute] += 1
+            if not buckets:
+                continue
+            max_minute = max(buckets.values()) if buckets else 0
+            if max_minute >= BURST_THRESHOLD_PER_MINUTE:
+                anomalies.setdefault(ip, {"reasons": [], "metrics": {}})
+                if "Traffic spike" not in anomalies[ip]["reasons"]:
+                    anomalies[ip]["reasons"].append("Traffic spike")
+                anomalies[ip]["metrics"]["max_per_minute"] = max_minute
+
         return anomalies
 
 class Correlator:
@@ -647,6 +671,8 @@ class ParserSelector:
 
         # Heuristics by file content
         # If most lines start with { and end with }, it's JSONL
+        json_like = sum(1 for l in sample_lines if l.strip().startsWith("{") and l.strip().endswith("}")) if False else None
+        # Corrected simple heuristic to avoid attribute typo above
         json_like = sum(1 for l in sample_lines if l.strip().startswith("{") and l.strip().endswith("}"))
         if json_like >= max(1, len([l for l in sample_lines if l.strip()]) // 2):
             return JSONLogParser()
@@ -801,6 +827,78 @@ class SecurityLogAnalyzer:
     # Alternate names expected in some environments
     def generate_timeline(self, events: Iterable[Union[Event, Dict[str, Any]]]) -> List[Dict[str, Any]]:
         return self.build_timeline(events)
+
+    # --------------- Additional compatibility wrappers (signatures & IOCs) ---------------
+
+    def detect_signatures(self, events: Iterable[Union[Event, Dict[str, Any]]]) -> List[Dict[str, Any]]:
+        """
+        Evaluate provided events for attack signatures.
+        Returns list of event dicts that matched at least one signature.
+        """
+        results: List[Dict[str, Any]] = []
+        for e in events:
+            try:
+                ev = e if isinstance(e, Event) else self._dict_to_event(e) if isinstance(e, dict) else None
+                if not ev:
+                    continue
+                hits = self.signature_engine.evaluate_event(ev)
+                if hits:
+                    for h in hits:
+                        if h not in ev.matched_signatures:
+                            ev.matched_signatures.append(h)
+                    ev.severity = "HIGH" if ev.severity not in ("CRITICAL",) else ev.severity
+                    if "signature" not in ev.tags:
+                        ev.tags.append("signature")
+                    results.append(ev.to_dict())
+            except Exception as ex:
+                eprint(f"[!] Signature detection error: {ex}")
+        return results
+
+    # Aliases for broader compatibility
+    def detect_attack_signatures(self, events: Iterable[Union[Event, Dict[str, Any]]]) -> List[Dict[str, Any]]:
+        return self.detect_signatures(events)
+
+    def pattern_match(self, events: Iterable[Union[Event, Dict[str, Any]]]) -> List[Dict[str, Any]]:
+        return self.detect_signatures(events)
+
+    def match_signatures(self, events: Iterable[Union[Event, Dict[str, Any]]]) -> List[Dict[str, Any]]:
+        return self.detect_signatures(events)
+
+    def correlate_iocs(self, items: Iterable[Union[Event, Dict[str, Any], str]]) -> Dict[str, Dict[str, int]]:
+        """
+        Correlate Indicators of Compromise (IP addresses) with provided events or IP strings.
+        Returns mapping: ip -> {'count': occurrences}
+        """
+        hits: Dict[str, Dict[str, int]] = {}
+        ip_pat = re.compile(r"^\d{1,3}(?:\.\d{1,3}){3}$")
+        for it in items:
+            try:
+                ip: Optional[str] = None
+                if isinstance(it, Event):
+                    ip = it.src_ip
+                elif isinstance(it, dict):
+                    ip = it.get("src_ip") or it.get("ip") or it.get("client_ip") or it.get("remote_addr")
+                elif isinstance(it, str):
+                    # direct IP string
+                    ip = it.strip() if ip_pat.match(it.strip() or "") else None
+                if not ip:
+                    continue
+                if self.ioc_engine.check_ip(ip):
+                    entry = hits.setdefault(ip, {"count": 0})
+                    entry["count"] += 1
+            except Exception as ex:
+                eprint(f"[!] IOC correlation error: {ex}")
+        return hits
+
+    # IOC aliases for compatibility
+    def ioc_correlation(self, items: Iterable[Union[Event, Dict[str, Any], str]]) -> Dict[str, Dict[str, int]]:
+        return self.correlate_iocs(items)
+
+    def match_iocs(self, items: Iterable[Union[Event, Dict[str, Any], str]]) -> Dict[str, Dict[str, int]]:
+        return self.correlate_iocs(items)
+
+    def correlate_indicators(self, items: Iterable[Union[Event, Dict[str, Any], str]]) -> Dict[str, Dict[str, int]]:
+        return self.correlate_iocs(items)
 
     def analyze(self, input_paths: List[str], forced_format: Optional[str] = None) -> Dict[str, Any]:
         all_events: List[Event] = []
