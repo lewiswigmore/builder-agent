@@ -198,7 +198,7 @@ security_tools:
   - When API credentials lack required read permissions, the tool fails gracefully,
     listing missing permissions and suggesting least-privilege remediation.
   ready: true
-  status: todo
+  status: in_progress
   area_allowlist:
   - tools/cloud/iam_attack_path_mapper.py
   - tests/test_cloud_cloud_001.py
