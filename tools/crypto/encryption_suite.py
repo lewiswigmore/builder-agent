@@ -20,6 +20,7 @@ try:
     from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
     from cryptography.hazmat.primitives import hashes, hmac, serialization, padding as sympadding
     from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
+    from cryptography.hazmat.primitives.kdf.hkdf import HKDF
     from cryptography.hazmat.primitives.asymmetric import rsa, padding
     from cryptography.exceptions import InvalidSignature, InvalidTag
 except Exception as e:
@@ -77,9 +78,23 @@ def sha256_file(path: str) -> str:
     return digest.finalize().hex()
 
 
+def _derive_mac_key_from_key(base_key: bytes, iv: bytes) -> bytes:
+    """
+    Derive a 32-byte MAC key from a given base encryption key using HKDF with SHA-256.
+    Salt is the IV/nonce and info is a fixed context string.
+    """
+    hkdf = HKDF(
+        algorithm=hashes.SHA256(),
+        length=32,
+        salt=iv,
+        info=b"encsuite-file-mac",
+    )
+    return hkdf.derive(base_key)
+
+
 # ---------------------------- AES Bytes ----------------------------
 
-_SUPPORTED_AES_MODES = {"GCM": 1, "CBC": 2, "CTR": 3}
+_SUPPORTED_AES_MODES = {"GCM": 1, "CBC": 2, "CTR": 3, "CFB": 4}
 _MODE_CODE_TO_NAME = {v: k for k, v in _SUPPORTED_AES_MODES.items()}
 
 
@@ -94,6 +109,8 @@ def _new_cipher(key: bytes, mode: str, iv: bytes, tag: Optional[bytes] = None) -
         m = modes.CBC(iv)
     elif mode == "CTR":
         m = modes.CTR(iv)
+    elif mode == "CFB":
+        m = modes.CFB(iv)
     else:
         raise ValueError(f"Unsupported AES mode: {mode}")
     return Cipher(algo, m)
@@ -102,8 +119,8 @@ def _new_cipher(key: bytes, mode: str, iv: bytes, tag: Optional[bytes] = None) -
 def aes_encrypt_bytes(plaintext: bytes, key: bytes, mode: str = "GCM", iv: Optional[bytes] = None, aad: Optional[bytes] = None, mac_key: Optional[bytes] = None) -> Dict[str, Any]:
     """
     Encrypt bytes using AES in the specified mode.
-    For GCM, Tag is provided in output. For CBC/CTR, if mac_key is provided, returns HMAC for integrity.
-    Returns dict with keys: ciphertext, iv, tag (GCM), hmac (CBC/CTR), mode.
+    For GCM, Tag is provided in output. For CBC/CTR/CFB, if mac_key is provided, returns HMAC for integrity.
+    Returns dict with keys: ciphertext, iv, tag (GCM), hmac (CBC/CTR/CFB), mode.
     """
     if not isinstance(plaintext, (bytes, bytearray)):
         raise TypeError("Plaintext must be bytes")
@@ -142,7 +159,7 @@ def aes_decrypt_bytes(ciphertext: bytes, key: bytes, mode: str, iv: bytes, aad: 
     """
     Decrypt bytes using AES.
     For GCM, requires tag.
-    For CBC/CTR with HMAC, pass mac_key to verify; raises InvalidSignature if mismatch.
+    For CBC/CTR/CFB with HMAC, caller should verify integrity separately (e.g., with file API).
     """
     if not isinstance(ciphertext, (bytes, bytearray)):
         raise TypeError("Ciphertext must be bytes")
@@ -161,16 +178,6 @@ def aes_decrypt_bytes(ciphertext: bytes, key: bytes, mode: str, iv: bytes, aad: 
             raise InvalidTag("GCM authentication failed. Data may be tampered.") from e
         return plaintext
     else:
-        if mac_key is not None:
-            hm = hmac.HMAC(mac_key, hashes.SHA256())
-            hm.update(iv)
-            hm.update(ciphertext)
-            try:
-                hm.verify(hm.finalize())
-            except Exception:
-                # This pattern is wrong (would always succeed). Correct approach requires comparing with provided HMAC.
-                # For byte API, caller should verify before calling, or provide an expected_hmac to compare.
-                pass  # Keep compatibility; file API handles HMAC verification properly.
         decryptor = _new_cipher(key, mode, iv).decryptor()
         padded = decryptor.update(ciphertext) + decryptor.finalize()
         if mode == "CBC":
@@ -216,7 +223,8 @@ def encrypt_file(input_path: str, output_path: str, *, password: Optional[str] =
     """
     Encrypt a file with integrity verification.
     - Default is AES-256-GCM with PBKDF2 (if password provided).
-    - For CBC/CTR, HMAC-SHA256 is computed over (iv || ciphertext). Requires a separate MAC key; when password is provided, keys are split from PBKDF2 output.
+    - For CBC/CTR/CFB, HMAC-SHA256 is computed over (iv || ciphertext). When using password, keys are split from PBKDF2 output.
+      When providing a raw key of 16/24/32 bytes, a MAC key is derived from the encryption key using HKDF with the IV.
     Returns metadata dict (including salt/iv/tag/hmac).
     """
     if not os.path.isfile(input_path):
@@ -236,7 +244,7 @@ def encrypt_file(input_path: str, output_path: str, *, password: Optional[str] =
     mac_key = None
     enc_key = None
     if password:
-        # derive 32 bytes for GCM; for CBC/CTR derive 64 bytes and split
+        # derive 32 bytes for GCM; for CBC/CTR/CFB derive 64 bytes and split
         pwd_bytes = password.encode("utf-8")
         if mode == "GCM":
             enc_key, salt, iterations = pbkdf2_derive_key(pwd_bytes, None, 32, iterations)
@@ -250,14 +258,20 @@ def encrypt_file(input_path: str, output_path: str, *, password: Optional[str] =
             if len(key) == 64:
                 enc_key, mac_key = key[:32], key[32:]
             else:
-                raise ValueError("For CBC/CTR, provide 64-byte key (32 enc + 32 mac) or use password-based encryption")
+                # accept single key; derive MAC key later using HKDF with IV
+                enc_key = key if len(key) in (16, 24, 32) else None
+                if enc_key is None:
+                    raise ValueError("Invalid key length")
 
     # IV/nonce
     iv = os.urandom(12 if mode == "GCM" else 16)
+    # Derive MAC key for non-GCM when not provided
+    if mode != "GCM" and mac_key is None:
+        mac_key = _derive_mac_key_from_key(enc_key, iv)
 
     temp_cipher_fd, temp_cipher_path = tempfile.mkstemp(prefix="encsuite_", suffix=".bin")
     os.close(temp_cipher_fd)
-    hmac_ctx = hmac.HMAC(mac_key, hashes.SHA256()) if (mac_key is not None) else None
+    hmac_ctx = hmac.HMAC(mac_key, hashes.SHA256()) if (mac_key is not None and mode != "GCM") else None
 
     try:
         with open(input_path, "rb") as fin, open(temp_cipher_path, "wb") as ftemp:
@@ -277,18 +291,13 @@ def encrypt_file(input_path: str, output_path: str, *, password: Optional[str] =
                     for chunk in iter(lambda: fin.read(chunk_size), b""):
                         padded = padder.update(chunk)
                         if padded:
-                            ct_part = encryptor.update(padded)
-                            ftemp.write(ct_part)
-                            if hmac_ctx:
-                                if hmac_ctx._ctx is not None:  # internal, but we only call update
-                                    pass
-                    # finalize padding and encryption
+                            ftemp.write(encryptor.update(padded))
                     final_padded = padder.finalize()
                     if final_padded:
                         ftemp.write(encryptor.update(final_padded))
                     ftemp.write(encryptor.finalize())
                 else:
-                    # CTR
+                    # CTR/CFB
                     for chunk in iter(lambda: fin.read(chunk_size), b""):
                         ftemp.write(encryptor.update(chunk))
                     ftemp.write(encryptor.finalize())
@@ -384,9 +393,13 @@ def decrypt_file(input_path: str, output_path: str, *, password: Optional[str] =
             if mode == "GCM":
                 enc_key = key[:32] if len(key) >= 32 else key
             else:
-                if len(key) != 64:
-                    raise ValueError("For CBC/CTR, provide a 64-byte key (32 enc + 32 mac)")
-                enc_key, mac_key = key[:32], key[32:]
+                if len(key) == 64:
+                    enc_key, mac_key = key[:32], key[32:]
+                elif len(key) in (16, 24, 32):
+                    enc_key = key
+                    mac_key = _derive_mac_key_from_key(enc_key, iv)
+                else:
+                    raise ValueError("For CBC/CTR/CFB, provide a 16/24/32-byte key (MAC derived) or a 64-byte key (enc+mac)")
 
         # Work with ciphertext stream after metadata
         temp_plain_fd, temp_plain_path = tempfile.mkstemp(prefix="encsuite_dec_", suffix=".bin")
@@ -434,7 +447,6 @@ def decrypt_file(input_path: str, output_path: str, *, password: Optional[str] =
                             buf = b""
                             for chunk in iter(lambda: ctemp.read(chunk_size), b""):
                                 buf += decryptor.update(chunk)
-                                # write in chunks; padding removed at end
                                 if len(buf) > 2 * 1024 * 1024:
                                     ptemp.write(buf)
                                     buf = b""
@@ -495,33 +507,33 @@ def rsa_generate_keypair(key_size: int = 2048, public_exponent: int = 65537, pas
     return private_pem, public_pem
 
 
-def rsa_encrypt(public_pem: bytes, plaintext: bytes) -> bytes:
-    if not isinstance(plaintext, (bytes, bytearray)):
+def rsa_encrypt(public_key: bytes, message: bytes) -> bytes:
+    if not isinstance(message, (bytes, bytearray)):
         raise TypeError("Plaintext must be bytes")
-    public_key = serialization.load_pem_public_key(public_pem)
-    ciphertext = public_key.encrypt(
-        plaintext,
+    pub = serialization.load_pem_public_key(public_key)
+    ciphertext = pub.encrypt(
+        message,
         padding.OAEP(mgf=padding.MGF1(algorithm=hashes.SHA256()), algorithm=hashes.SHA256(), label=None),
     )
     return ciphertext
 
 
-def rsa_decrypt(private_pem: bytes, ciphertext: bytes, password: Optional[str] = None) -> bytes:
+def rsa_decrypt(private_key: bytes, ciphertext: bytes, password: Optional[str] = None) -> bytes:
     if not isinstance(ciphertext, (bytes, bytearray)):
         raise TypeError("Ciphertext must be bytes")
-    private_key = serialization.load_pem_private_key(private_pem, password=password.encode("utf-8") if isinstance(password, str) else password)
-    plaintext = private_key.decrypt(
+    priv = serialization.load_pem_private_key(private_key, password=password.encode("utf-8") if isinstance(password, str) else password)
+    plaintext = priv.decrypt(
         ciphertext,
         padding.OAEP(mgf=padding.MGF1(algorithm=hashes.SHA256()), algorithm=hashes.SHA256(), label=None),
     )
     return plaintext
 
 
-def rsa_sign(private_pem: bytes, message: bytes, password: Optional[str] = None) -> bytes:
+def rsa_sign(private_key: bytes, message: bytes, password: Optional[str] = None) -> bytes:
     if not isinstance(message, (bytes, bytearray)):
         raise TypeError("Message must be bytes")
-    private_key = serialization.load_pem_private_key(private_pem, password=password.encode("utf-8") if isinstance(password, str) else password)
-    signature = private_key.sign(
+    priv = serialization.load_pem_private_key(private_key, password=password.encode("utf-8") if isinstance(password, str) else password)
+    signature = priv.sign(
         message,
         padding.PSS(mgf=padding.MGF1(hashes.SHA256()), salt_length=padding.PSS.MAX_LENGTH),
         hashes.SHA256(),
@@ -529,10 +541,10 @@ def rsa_sign(private_pem: bytes, message: bytes, password: Optional[str] = None)
     return signature
 
 
-def rsa_verify(public_pem: bytes, message: bytes, signature: bytes) -> bool:
-    public_key = serialization.load_pem_public_key(public_pem)
+def rsa_verify(public_key: bytes, message: bytes, signature: bytes) -> bool:
+    pub = serialization.load_pem_public_key(public_key)
     try:
-        public_key.verify(
+        pub.verify(
             signature,
             message,
             padding.PSS(mgf=padding.MGF1(hashes.SHA256()), salt_length=padding.PSS.MAX_LENGTH),
@@ -572,9 +584,9 @@ def _cli():
     p_enc = sub.add_parser("aes-encrypt-file", help="Encrypt a file (AES with integrity)")
     p_enc.add_argument("input", help="Input file")
     p_enc.add_argument("output", help="Output encrypted file")
-    p_enc.add_argument("--mode", choices=["GCM", "CBC", "CTR"], default="GCM")
+    p_enc.add_argument("--mode", choices=["GCM", "CBC", "CTR", "CFB"], default="GCM")
     p_enc.add_argument("--password", help="Password for PBKDF2 (recommended)")
-    p_enc.add_argument("--key", help="Hex key (32 bytes for GCM, 64 bytes for CBC/CTR)")
+    p_enc.add_argument("--key", help="Hex key (32 bytes for GCM, 16/24/32/64 bytes for CBC/CTR/CFB)")
     p_enc.add_argument("--aad", help="Base64 AAD for AEAD modes (GCM)")
 
     p_dec = sub.add_parser("aes-decrypt-file", help="Decrypt a file (verifies integrity)")
