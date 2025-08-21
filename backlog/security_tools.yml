@@ -105,7 +105,7 @@ security_tools:
   - Identify suspicious IP addresses
   - Generate security event timeline
   ready: true
-  status: todo
+  status: in_progress
   area_allowlist:
   - tools/threat_hunt/log_analyzer.py
   - tools/threat_hunt/signatures/
