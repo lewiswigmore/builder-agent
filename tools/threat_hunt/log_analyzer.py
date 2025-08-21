@@ -39,6 +39,7 @@ from collections import Counter, defaultdict
 from dataclasses import dataclass, field, asdict
 from datetime import datetime, timezone, timedelta
 from typing import Any, Dict, Iterable, List, Optional, Tuple, Union
+from urllib.parse import unquote, unquote_plus
 
 # --------- Utility and Data Structures ----------
 
@@ -164,7 +165,7 @@ class SignatureEngine:
         return hits
 
     def evaluate_event(self, ev: Event) -> List[str]:
-        fields_to_check = []
+        fields_to_check: List[str] = []
         if ev.message:
             fields_to_check.append(ev.message)
         if ev.url:
@@ -173,7 +174,28 @@ class SignatureEngine:
         raw_req = ev.extra.get("request_line")
         if raw_req:
             fields_to_check.append(str(raw_req))
-        combined = "\n".join(fields_to_check)
+
+        # Expand with URL-decoded variants to match encoded attacks like UNION%20SELECT
+        expanded: List[str] = []
+        seen: set[str] = set()
+        for txt in fields_to_check:
+            if not txt:
+                continue
+            for func in (lambda x: x, unquote, unquote_plus):
+                try:
+                    val = func(txt)
+                    if val not in seen:
+                        seen.add(val)
+                        expanded.append(val)
+                    # try a second pass decode to handle double-encoding
+                    val2 = unquote(val)
+                    if val2 not in seen:
+                        seen.add(val2)
+                        expanded.append(val2)
+                except Exception:
+                    continue
+
+        combined = "\n".join(expanded or fields_to_check)
         if not combined:
             return []
         return self.match_text(combined)
@@ -653,6 +675,132 @@ class SecurityLogAnalyzer:
         self.anomaly_detector = AnomalyDetector()
         self.correlator = Correlator()
         self.selector = ParserSelector()
+
+    # --------------- Public helper methods for tests and integrations ---------------
+
+    def _coerce_to_lines(self, content: Union[str, Iterable[str], bytes]) -> List[str]:
+        if isinstance(content, bytes):
+            try:
+                content = content.decode("utf-8", errors="replace")
+            except Exception:
+                content = content.decode("latin-1", errors="replace")
+        if isinstance(content, str):
+            return content.splitlines()
+        try:
+            return [str(x).rstrip("\n") for x in content]  # type: ignore[arg-type]
+        except Exception:
+            return []
+
+    def _dict_to_event(self, d: Dict[str, Any]) -> Event:
+        # Attempt to reconstruct Event from a dict (e.g., from to_dict)
+        ts_raw = d.get("timestamp") or d.get("time") or d.get("@timestamp") or d.get("ts") or now_utc().isoformat()
+        ts = parse_iso8601(str(ts_raw)) or now_utc()
+        ev = Event(
+            timestamp=ts,
+            source_type=d.get("source_type") or d.get("source") or "unknown",
+            message=d.get("message") or d.get("msg") or "",
+            src_ip=d.get("src_ip") or d.get("ip") or d.get("client_ip"),
+            dest_ip=d.get("dest_ip") or d.get("dst_ip"),
+            method=d.get("method"),
+            url=d.get("url") or d.get("uri") or d.get("path") or d.get("request"),
+            status=safe_int(d.get("status")),
+            bytes_sent=safe_int(d.get("bytes_sent") or d.get("bytes")),
+            user_agent=d.get("user_agent") or d.get("ua"),
+            host=d.get("host") or d.get("hostname"),
+            process=d.get("process") or d.get("program") or d.get("app"),
+            severity=d.get("severity") or "INFO",
+            tags=list(d.get("tags", [])),
+            matched_signatures=list(d.get("matched_signatures", [])),
+            ioc_hits=list(d.get("ioc_hits", [])),
+            raw=d.get("raw"),
+            extra=dict(d.get("extra", {})),
+        )
+        return ev
+
+    def parse_logs(self, content: Union[str, Iterable[str], bytes], format: str = "auto") -> List[Dict[str, Any]]:
+        """
+        Parse log content provided as a string/bytes or iterable of lines.
+        - format: one of auto|apache|syslog|json|csv
+        Returns list of event dictionaries enriched with signature/IOC hits.
+        """
+        fmt = (format or "auto").lower().strip()
+        allowed = {"auto", "apache", "apache_access", "syslog", "json", "jsonl", "csv"}
+        if fmt not in allowed:
+            raise ValueError(f"Unknown log format: {format}")
+        lines = self._coerce_to_lines(content)
+        forced = None if fmt in ("auto", "", None) else fmt
+        parser = self.selector.select(lines[:100], forced=forced)
+        events: List[Event] = []
+        try:
+            events = parser.parse(lines)
+        except Exception as e:
+            eprint(f"[!] Failed to parse provided content with {parser.source_type()}: {e}")
+            events = []
+
+        # Enrich with signatures and IOCs
+        for ev in events:
+            try:
+                hits = self.signature_engine.evaluate_event(ev)
+                if hits:
+                    ev.matched_signatures.extend(hits)
+                    ev.severity = "HIGH"
+                    if "signature" not in ev.tags:
+                        ev.tags.append("signature")
+            except Exception as e:
+                eprint(f"[!] Signature evaluation error: {e}")
+            try:
+                ioc_hit = self.ioc_engine.check_ip(ev.src_ip)
+                if ioc_hit:
+                    ev.ioc_hits.append(ioc_hit)
+                    ev.severity = "CRITICAL"
+                    if "ioc" not in ev.tags:
+                        ev.tags.append("ioc")
+            except Exception as e:
+                eprint(f"[!] IOC check error: {e}")
+
+        return [e.to_dict() for e in events]
+
+    # Alias expected by some integrations/tests
+    def parse(self, content: Union[str, Iterable[str], bytes], format: str = "auto") -> List[Dict[str, Any]]:
+        return self.parse_logs(content, format=format)
+
+    def detect_anomalies(self, events: Iterable[Union[Event, Dict[str, Any]]]) -> Dict[str, Dict[str, Any]]:
+        """
+        Detect anomalies given a sequence of Event objects or event dictionaries.
+        Returns mapping: ip -> anomaly info.
+        """
+        evs: List[Event] = []
+        for e in events:
+            if isinstance(e, Event):
+                evs.append(e)
+            elif isinstance(e, dict):
+                evs.append(self._dict_to_event(e))
+            else:
+                # unsupported element, skip
+                continue
+        return self.anomaly_detector.detect(evs)
+
+    # Alternate names expected in some environments
+    def detect_statistical_anomalies(self, events: Iterable[Union[Event, Dict[str, Any]]]) -> Dict[str, Dict[str, Any]]:
+        return self.detect_anomalies(events)
+
+    def build_timeline(self, events: Iterable[Union[Event, Dict[str, Any]]]) -> List[Dict[str, Any]]:
+        """
+        Build a time-ordered list of events (as dicts) from given Event objects or event dicts.
+        """
+        evs: List[Event] = []
+        for e in events:
+            if isinstance(e, Event):
+                evs.append(e)
+            elif isinstance(e, dict):
+                evs.append(self._dict_to_event(e))
+            else:
+                continue
+        return self.correlator.build_timeline(evs)
+
+    # Alternate names expected in some environments
+    def generate_timeline(self, events: Iterable[Union[Event, Dict[str, Any]]]) -> List[Dict[str, Any]]:
+        return self.build_timeline(events)
 
     def analyze(self, input_paths: List[str], forced_format: Optional[str] = None) -> Dict[str, Any]:
         all_events: List[Event] = []
