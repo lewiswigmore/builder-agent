@@ -70,7 +70,7 @@ class RateLimiter:
                 # Handle common throttling / rate-limit codes
                 code = getattr(e, "response", {}).get("Error", {}).get("Code") if hasattr(e, "response") else None  # type: ignore
                 msg = str(e)
-                if code in {"Throttling", "ThrottlingException", "RequestLimitExceeded", "TooManyRequestsException"} or "rate" in msg.lower():
+                if code in {"Throttling", "ThrottlingException", "RequestLimitExceeded", "TooManyRequestsException"} or "rate" in msg.lower() or "throttl" in msg.lower():
                     if attempt >= self.retries:
                         raise
                     backoff = min(self.max_sleep, (2 ** attempt) * 0.5)
@@ -384,8 +384,6 @@ class AWSCollector(BaseCollector):
 
             # Determine admin
             is_admin = False
-            # AWS managed AdministratorAccess ARN may vary per partition, check by policy name match in attached meta if available
-            # Evaluate docs for wildcard permissions
             for doc in list(inline_policies.values()) + list(attached_docs.values()):
                 acts = Graph.normalize_actions_from_policy(doc)
                 if "*" in acts or any(a.strip().endswith(":*") for a in acts):
@@ -688,6 +686,280 @@ def print_missing_perms(missing: Set[str], errors: List[str], out_format: str = 
         print("Errors encountered:")
         for e in errors:
             print(f"- {e}")
+
+
+############################
+# Programmatic Scan API (for tests and integrations)
+############################
+
+class MissingReadPermissionsError(Exception):
+    def __init__(self, missing_permissions: Set[str], suggested_actions: Optional[str] = None):
+        super().__init__(f"Missing read permissions: {', '.join(sorted(list(missing_permissions)))}")
+        self.missing_permissions = sorted(list(missing_permissions))
+        self.suggested_actions = suggested_actions or (
+            "Grant least-privilege read-only permissions. For AWS: iam:ListRoles, iam:GetRole, iam:ListRolePolicies, "
+            "iam:GetRolePolicy, iam:ListAttachedRolePolicies, iam:GetPolicy, iam:GetPolicyVersion."
+        )
+
+
+def _actions_to_policy_doc(actions: List[str]) -> Dict[str, Any]:
+    # Convert a list of action strings into a minimal AWS policy doc
+    return {
+        "Version": "2012-10-17",
+        "Statement": [{"Effect": "Allow", "Action": actions, "Resource": "*"}],
+    }
+
+
+def _build_aws_trust_edges(graph: Graph, account_id: str):
+    for nid, n in list(graph.nodes.items()):
+        if n.cloud != "aws" or n.type != "identity" or n.scope != account_id:
+            continue
+        tp = n.attrs.get("trust_policy")
+        if not isinstance(tp, dict):
+            continue
+        stmts = tp.get("Statement")
+        if isinstance(stmts, dict):
+            stmts = [stmts]
+        if not isinstance(stmts, list):
+            continue
+        for st in stmts:
+            if str(st.get("Effect", "")).lower() != "allow":
+                continue
+            principal = st.get("Principal")
+            principals: List[str] = []
+            if principal == "*":
+                principals.append("*")
+            elif isinstance(principal, dict):
+                for k in ["AWS", "Federated", "Service"]:
+                    val = principal.get(k)
+                    if isinstance(val, list):
+                        principals.extend(val)
+                    elif isinstance(val, str):
+                        principals.append(val)
+            elif isinstance(principal, str):
+                principals.append(principal)
+            for p in principals:
+                if p == "*":
+                    any_id = f"aws:any-principal:{account_id}"
+                    if any_id not in graph.nodes:
+                        graph.add_node(Node(id=any_id, type="identity", cloud="aws", scope=account_id, attrs={"name": "AnyPrincipalInAccount"}))
+                    graph.add_edge(Edge(src=any_id, dst=nid, type="assume-role", attrs={"reason": "trust-policy-wildcard"}))
+                    continue
+                # ARN form
+                if p.startswith("arn:aws:iam::"):
+                    parts = p.split(":")
+                    p_acct = parts[4] if len(parts) > 4 else account_id
+                    res = parts[5] if len(parts) > 5 else ""
+                    if res.startswith("role/"):
+                        pname = res.split("/", 1)[1]
+                        pid = f"aws:role:{p_acct}:{pname}"
+                        if pid not in graph.nodes:
+                            graph.add_node(Node(id=pid, type="identity", cloud="aws", scope=p_acct, attrs={"arn": p, "external": p_acct != account_id}))
+                        graph.add_edge(Edge(src=pid, dst=nid, type="assume-role", attrs={"reason": "trust-policy"}))
+                        continue
+                    if res.startswith("user/"):
+                        uname = res.split("/", 1)[1]
+                        pid = f"aws:user:{p_acct}:{uname}"
+                        if pid not in graph.nodes:
+                            graph.add_node(Node(id=pid, type="identity", cloud="aws", scope=p_acct, attrs={"arn": p, "external": p_acct != account_id}))
+                        graph.add_edge(Edge(src=pid, dst=nid, type="assume-role", attrs={"reason": "trust-policy"}))
+                        continue
+                # Short forms: role:<name> or <name>
+                role_name = None
+                if p.startswith("role:"):
+                    role_name = p.split(":", 1)[1]
+                else:
+                    # if no delimiter, assume role name within account
+                    role_name = p
+                pid = f"aws:role:{account_id}:{role_name}"
+                if pid not in graph.nodes:
+                    graph.add_node(Node(id=pid, type="identity", cloud="aws", scope=account_id, attrs={"name": role_name}))
+                graph.add_edge(Edge(src=pid, dst=nid, type="assume-role", attrs={"reason": "trust-policy"}))
+
+
+def _derive_accounts_from_client(client: Any) -> List[str]:
+    # Try best-effort extraction of account scopes from client
+    if hasattr(client, "list_accounts"):
+        try:
+            accs = client.list_accounts()
+            if isinstance(accs, dict):
+                return list(accs.keys())
+            if isinstance(accs, list):
+                return accs
+        except Exception:
+            pass
+    for attr in ("dataset", "data", "state"):
+        ds = getattr(client, attr, None)
+        if isinstance(ds, dict):
+            return list(ds.keys())
+    return []
+
+
+def _get_roles_from_client(client: Any, account: str, rate: RateLimiter):
+    # Attempt multiple client shapes to obtain role definitions
+    last_exc: Optional[Exception] = None
+    if hasattr(client, "list_roles"):
+        try:
+            return rate.call(client.list_roles, account)
+        except Exception as e:
+            last_exc = e
+    if hasattr(client, "get_roles"):
+        try:
+            return rate.call(client.get_roles, account)
+        except Exception as e:
+            last_exc = e
+    if hasattr(client, "get_account"):
+        try:
+            acct = rate.call(client.get_account, account)
+            return acct.get("roles", {})
+        except Exception as e:
+            last_exc = e
+    # Try direct dataset access
+    for attr in ("dataset", "data", "state"):
+        ds = getattr(client, attr, None)
+        if isinstance(ds, dict):
+            return ds.get(account, {}).get("roles", {})
+    if last_exc:
+        raise last_exc
+    raise RuntimeError("Unable to obtain roles from client")
+
+
+def _is_admin_from_actions(actions: List[str]) -> bool:
+    acts = set(a.strip() for a in actions if isinstance(a, str))
+    if "AdministratorAccess" in acts or "*" in acts:
+        return True
+    if any(a.endswith(":*") for a in acts):
+        return True
+    # Heuristic: contains powerful actions like iam:*, sts:*, organizations:*
+    prefixes = ("iam:", "sts:", "organizations:", "ec2:", "s3:")
+    if any(a.endswith(":*") and a.split(":", 1)[0] + ":" in prefixes for a in acts if ":" in a):
+        return True
+    return False
+
+
+def run_scan(config: Dict[str, Any], client: Optional[Any] = None) -> Dict[str, Any]:
+    """
+    Programmatic scan entrypoint.
+    - config: {
+        "scope": {"accounts": ["111111111111", ...]},
+        "read_only": True,
+        "rate_limit": {"max_calls_per_second": 5}
+      }
+    - client: optional injected client for testing (read-only). If not provided, SDK collectors are used.
+    Returns dict with "snapshot", "attack_paths", "missing_permissions", "errors".
+    """
+    rate_per_sec = 5.0
+    if isinstance(config.get("rate_limit"), dict):
+        rate_per_sec = float(config["rate_limit"].get("max_calls_per_second", rate_per_sec))
+    rate = RateLimiter(rate_per_sec=rate_per_sec)
+
+    graph = Graph()
+    missing_perms: Set[str] = set()
+    errors: List[str] = []
+
+    scopes = config.get("scope", {}).get("accounts", [])
+    if not isinstance(scopes, list):
+        scopes = []
+
+    if client is None:
+        # Use native collectors, scoped
+        if scopes:
+            aws = AWSCollector(rate)
+            aws.collect(scopes, graph)
+            missing_perms |= aws.missing_perms
+            errors.extend(aws.errors)
+        else:
+            aws = AWSCollector(rate)
+            aws.collect([], graph)
+            missing_perms |= aws.missing_perms
+            errors.extend(aws.errors)
+    else:
+        # Use injected client (read-only)
+        accounts = scopes[:] if scopes else _derive_accounts_from_client(client)
+        for account in accounts:
+            # Read roles
+            try:
+                roles_info = _get_roles_from_client(client, account, rate)
+            except Exception as e:
+                # Treat as missing read permission for list roles
+                missing_perms |= {"iam:ListRoles"}
+                errors.append(f"Error listing roles for account {account}: {e}")
+                raise MissingReadPermissionsError(missing_perms)
+            # roles_info may be dict(name->details) or list of names/details
+            if isinstance(roles_info, dict):
+                items = list(roles_info.items())
+            elif isinstance(roles_info, list):
+                items = []
+                for item in roles_info:
+                    if isinstance(item, str):
+                        items.append((item, {}))
+                    elif isinstance(item, dict):
+                        name = item.get("name") or item.get("RoleName") or item.get("id") or "role-unknown"
+                        items.append((name, item))
+            else:
+                items = []
+
+            for role_name, r in items:
+                if isinstance(r, dict) and (not role_name or role_name == "role-unknown"):
+                    role_name = r.get("name") or r.get("RoleName") or role_name
+                inline_actions = []
+                attached = []
+                trust_policy = None
+                if isinstance(r, dict):
+                    inline_actions = list(r.get("inline", []))
+                    attached = list(r.get("managed", []))
+                    trust_policy = r.get("trust")
+                # Construct inline policy docs
+                inline_policies: Dict[str, Any] = {}
+                if inline_actions:
+                    inline_policies["InlineAuto"] = _actions_to_policy_doc(inline_actions)
+                # Determine admin
+                is_admin = _is_admin_from_actions(inline_actions) or ("AdministratorAccess" in attached)
+                # Build node
+                node = Node(
+                    id=f"aws:role:{account}:{role_name}",
+                    type="identity",
+                    cloud="aws",
+                    scope=account,
+                    attrs={
+                        "name": role_name,
+                        "is_admin": is_admin,
+                        "inline_policies": inline_policies,
+                        "attached_policies": attached,
+                        "trust_policy": trust_policy if isinstance(trust_policy, dict) else None,
+                    },
+                )
+                graph.add_node(node)
+            # Build trust edges within this account
+            _build_aws_trust_edges(graph, account)
+
+    # Snapshot and paths
+    snapshot = graph.to_snapshot()
+    paths_edges = graph.find_paths_to_admin()
+    attack_paths_out: List[Dict[str, Any]] = []
+    for path in paths_edges:
+        attack_paths_out.append({
+            "steps": [{"src": e.src, "dst": e.dst, "type": e.type, "attrs": e.attrs} for e in path],
+            "remediations": [{"priority": pr, "recommendation": msg} for pr, msg in remediation_suggestions_for_path(path, graph)],
+        })
+
+    result = {
+        "ethical_notice": ETHICAL_BANNER,
+        "snapshot": snapshot,
+        "attack_paths": attack_paths_out,
+        "missing_permissions": sorted(list(missing_perms)),
+        "errors": errors,
+    }
+    # If collection entirely failed due to missing read permissions, raise gracefully
+    if not graph.nodes and (missing_perms or errors):
+        if missing_perms:
+            raise MissingReadPermissionsError(set(missing_perms))
+    return result
+
+
+def scan(config: Dict[str, Any], client: Optional[Any] = None) -> Dict[str, Any]:
+    # Alias for run_scan to satisfy integrations/tests
+    return run_scan(config, client)
 
 
 ############################
