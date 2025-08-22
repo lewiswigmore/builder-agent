@@ -223,7 +223,7 @@ security_tools:
   - If the firmware attempts DNS tunneling during emulation, the network monitor detects
     and blocks the exfiltration attempt, recording an alert with PCAP evidence references.
   ready: true
-  status: todo
+  status: in_progress
   area_allowlist:
   - tools/iot/firmware_behavior_sandbox.py
   - tests/test_iot_iot_001.py
