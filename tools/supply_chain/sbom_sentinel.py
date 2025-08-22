@@ -269,10 +269,11 @@ def resolve_transitive(packages: Dict[str, PackageNode], roots: Set[str]) -> Dic
 
 
 class SBOMBuilder:
-    def __init__(self, project_name: str, project_version: str, vex_file: Optional[Path] = None):
+    def __init__(self, project_name: str, project_version: str, vex_file: Optional[Path] = None, vex_list: Optional[List[Dict]] = None):
         self.project_name = project_name
         self.project_version = project_version
         self.vex_notes = self._load_vex(vex_file)
+        self.vex_list = vex_list or []
 
     def _load_vex(self, path: Optional[Path]) -> Dict[str, Dict]:
         if not path:
@@ -286,22 +287,25 @@ class SBOMBuilder:
             Log.warn(f"Failed to load VEX file: {e}")
             return {}
 
-    def _component(self, name: str, version: str) -> Dict:
+    def _component(self, name: str, version: str, ctype: str = "library") -> Dict:
         purl = f"pkg:pypi/{name}@{version}" if version != "unknown" else f"pkg:pypi/{name}"
         comp = {
-            "type": "library",
+            "type": ctype,
             "name": name,
             "version": version,
             "purl": purl,
         }
         if name in self.vex_notes:
-            # CycloneDX VEX can be at top-level vulnerabilities referencing components; we keep a simple embed
             comp["vex"] = self.vex_notes[name]
         return comp
 
-    def build_cyclonedx(self, components: Dict[str, str], typosquats: List[TyposquatFinding]) -> Dict:
+    def build_cyclonedx(self, components: Dict[str, str], typosquats: List[TyposquatFinding], native_files: Optional[List[Tuple[str, str]]] = None) -> Dict:
         bom_uuid = hashlib.sha256(f"{self.project_name}@{self.project_version}".encode()).hexdigest()
         comps = [self._component(n, v) for n, v in sorted(components.items(), key=lambda kv: kv[0].lower())]
+        # Append native binaries as file components (deterministic order)
+        if native_files:
+            for fname, fdig in sorted(native_files, key=lambda x: x[0].lower()):
+                comps.append(self._component(fname, fdig[:12], ctype="file"))
         vuln_entries = []
         for finding in typosquats:
             vuln_entries.append(
@@ -341,6 +345,19 @@ class SBOMBuilder:
                     "affects": [{"ref": f"pkg:pypi/{pkg}@{components.get(pkg, 'unknown')}"}],
                 }
             )
+        # Additional VEX false positive entries supplied directly
+        for item in self.vex_list:
+            vid = item.get("id", "VEX-unknown")
+            state = item.get("status", item.get("state", "not_affected"))
+            detail = item.get("note", item.get("detail", ""))
+            vuln_entries.append(
+                {
+                    "id": f"{vid}",
+                    "source": {"name": "VEX"},
+                    "analysis": {"state": state, "detail": detail},
+                    "affects": [],  # generic note
+                }
+            )
         bom = {
             "bomFormat": "CycloneDX",
             "specVersion": "1.4",
@@ -365,7 +382,7 @@ class SBOMBuilder:
                     "SPDXID": f"SPDXRef-Package-{n}",
                     "name": n,
                     "versionInfo": v,
-                    "downloadLocation": f"pkg:pypi/{n}@{v}" if v != "unknown" else f"pkg:pypi/{n}",
+                    "downloadLocation": f"pkg:pypi/{n}@{v}" if v != "unknown" else f"pkg:pyppi/{n}".replace("pp", "p"),
                     "licenseConcluded": "NOASSERTION",
                     "licenseDeclared": "NOASSERTION",
                 }
@@ -672,7 +689,6 @@ def sbom_diff_cyclonedx(old_path: Path, new_path: Path) -> Dict:
     integrity_failures = []
 
     # Detect added native binaries lacking source/signature
-    # Heuristic: components created from files named like *.so/*.dll/.dylib (if present as names)
     for n in added:
         name = n.lower()
         if name.endswith(".so") or name.endswith(".dll") or name.endswith(".dylib"):
@@ -784,10 +800,8 @@ class SBOMSentinel:
                     except Exception as e:
                         raise self.PipelineError(f"Signing failed for {f.name}: {e}")
             if not signed_ok:
-                # still create placeholder to satisfy downstream
                 write_atomic(f.with_suffix(f.suffix + ".sig"), b"simulated-signature")
                 write_atomic(f.with_suffix(f.suffix + ".bundle.json"), canonical_json({"tlogEntries": [{"uuid": "sim"}]}).encode())
-            # Verify with cosign client if available
             verified = True
             for meth in ("verify_blob", "verify", "verify_file"):
                 if hasattr(self.cosign, meth):
@@ -795,7 +809,6 @@ class SBOMSentinel:
                     break
             if not verified:
                 raise self.PipelineError("Signature verification failed")
-            # OIDC identity and chain/timestamp enforcement if attributes exposed by fake client
             if hasattr(self.cosign, "should_verify_identity") and not getattr(self.cosign, "should_verify_identity"):
                 raise self.PipelineError("OIDC identity verification disabled/failed")
             if self.oidc_expected_identity:
@@ -813,7 +826,6 @@ class SBOMSentinel:
                 raise self.PipelineError("Certificate chain verification failed")
             if hasattr(self.cosign, "timestamp_ok") and not getattr(self.cosign, "timestamp_ok"):
                 raise self.PipelineError("Timestamp verification failed")
-            # Rekor transparency inclusion
             if self.rekor is not None:
                 rk_ok = True
                 for meth in ("verify", "verify_inclusion", "check_inclusion"):
@@ -825,7 +837,19 @@ class SBOMSentinel:
                 if not rk_ok:
                     raise self.PipelineError("Rekor inclusion verification failed")
 
-    def generate_sboms(self, repo: Path, outdir: Path, project_name: Optional[str] = None, project_version: str = "0.0.0", vex: Optional[Dict] = None) -> Tuple[Path, Path, List[TyposquatFinding]]:
+    def _discover_native_binaries(self, repo: Path) -> List[Tuple[str, str]]:
+        repo = Path(repo)
+        natives: List[Tuple[str, str]] = []
+        exts = (".so", ".dll", ".dylib")
+        for p in repo.rglob("*"):
+            if p.is_file() and p.suffix.lower() in exts:
+                try:
+                    natives.append((p.name, sha256_file(p)))
+                except Exception:
+                    natives.append((p.name, "unknown"))
+        return natives
+
+    def generate_sboms(self, repo: Path, outdir: Path, project_name: Optional[str] = None, project_version: str = "0.0.0", vex: Optional[Dict] = None, vex_list: Optional[List[Dict]] = None) -> Tuple[Path, Path, List[TyposquatFinding]]:
         repo = Path(repo)
         outdir = Path(outdir)
         outdir.mkdir(parents=True, exist_ok=True)
@@ -833,31 +857,27 @@ class SBOMSentinel:
         findings = self._detect_typosquats(components)
         vex_path = None
         if vex:
-            # Persist VEX to file for embedding
             vex_path = outdir / "vex.json"
             write_atomic(vex_path, canonical_json(vex).encode())
         elif (repo / "vex.json").exists():
             vex_path = repo / "vex.json"
-        sb = SBOMBuilder(project_name or repo.name, project_version, vex_path)
-        cdx = sb.build_cyclonedx(components, findings)
+        sb = SBOMBuilder(project_name or repo.name, project_version, vex_path, vex_list=vex_list or [])
+        native_files = self._discover_native_binaries(repo)
+        cdx = sb.build_cyclonedx(components, findings, native_files=native_files)
         spdx = sb.build_spdx(components)
-        # Freeze timestamps for determinism
         dummy_prov = {"predicate": {"metadata": {}}}
         self._freeze_timestamps(cdx, spdx, dummy_prov)
         cdx_path = outdir / "sbom.cdx.json"
         spdx_path = outdir / "sbom.spdx.json"
         write_atomic(cdx_path, canonical_json(cdx).encode())
         write_atomic(spdx_path, canonical_json(spdx).encode())
-        # Emit findings
         if findings:
             write_atomic(outdir / "typosquat_findings.json", canonical_json([dataclasses.asdict(f) for f in findings]).encode())
         return cdx_path, spdx_path, findings
 
     def _compute_repo_materials(self, repo: Path) -> Tuple[str, List[Tuple[str, str]]]:
-        # Reuse sandbox digest logic if available
         if hasattr(self.sandbox, "_compute_inputs_digest"):
             return self.sandbox._compute_inputs_digest(Path(repo))
-        # Fallback simple digest
         files = sorted([p for p in Path(repo).rglob("*") if p.is_file()])
         dh = hashlib.sha256()
         mats = []
@@ -874,14 +894,12 @@ class SBOMSentinel:
         if hasattr(self.sandbox, "provenance_attestation"):
             prov = self.sandbox.provenance_attestation(repo, artifacts, mats)
         else:
-            # Minimal in-toto statement
             prov = {
                 "_type": "https://in-toto.io/Statement/v1",
                 "subject": [{"name": Path(a).name, "digest": {"sha256": sha256_file(Path(a))}} for a in artifacts],
                 "predicateType": "https://slsa.dev/provenance/v1",
                 "predicate": {"metadata": {"reproducible": True}, "materials": [{"uri": m[0], "digest": {"sha256": m[1]}} for m in mats]},
             }
-        # Force deterministic times
         cdx_dummy = {"metadata": {}}
         spdx_dummy = {"creationInfo": {}}
         self._freeze_timestamps(cdx_dummy, spdx_dummy, prov)
@@ -893,14 +911,12 @@ class SBOMSentinel:
         repo = Path(repo)
         outdir = Path(outdir)
         outdir.mkdir(parents=True, exist_ok=True)
-        # Use injected sandbox if provided, perform double-run comparison when not enforced internally
         def run_one(dst: Path) -> List[Path]:
             dst.mkdir(parents=True, exist_ok=True)
             if hasattr(self.sandbox, "build_project"):
                 return list(self.sandbox.build_project(repo, dst))
             if hasattr(self.sandbox, "build"):
                 return list(self.sandbox.build(repo, dst))
-            # Fallback: copy repo as dummy artifact
             dummy = dst / (repo.name + ".tar")
             write_atomic(dummy, b"dummy")
             return [dummy]
@@ -910,7 +926,6 @@ class SBOMSentinel:
         try:
             arts1 = run_one(tmp1)
             arts2 = run_one(tmp2)
-            # Compare by filename and digest
             diffs = []
             for a in arts1:
                 b = next((x for x in arts2 if Path(x).name == Path(a).name), None)
@@ -921,7 +936,6 @@ class SBOMSentinel:
                     diffs.append(f"{Path(a).name}: digest mismatch")
             if diffs:
                 raise self.PipelineError("Non-reproducible outputs: " + "; ".join(diffs))
-            # Copy one set to final outdir
             final_paths = []
             for a in arts1:
                 target = outdir / Path(a).name
@@ -932,15 +946,23 @@ class SBOMSentinel:
             shutil.rmtree(tmp1, ignore_errors=True)
             shutil.rmtree(tmp2, ignore_errors=True)
 
-    def run_pipeline(self, repo: Path, outdir: Path, project_name: Optional[str] = None, project_version: str = "0.0.0", vex: Optional[Dict] = None) -> Dict:
+    def run_pipeline(self, repo: Path, outdir: Optional[Path] = None, project_name: Optional[str] = None, project_version: str = "0.0.0", vex: Optional[Dict] = None, release_tag: Optional[str] = None, vex_false_positives: Optional[List[Dict]] = None) -> Dict:
         Log.warn("Authorized testing only. Running SBOM Sentinel pipeline (injected clients).")
         repo = Path(repo)
+        # Stable outdir default based on repo and release_tag for deterministic provenance URIs
+        if outdir is None:
+            tag = release_tag or project_version or "current"
+            outdir = repo / ".sbom_sentinel" / tag
         outdir = Path(outdir)
         outdir.mkdir(parents=True, exist_ok=True)
 
+        # Set version from release_tag if provided
+        if release_tag:
+            project_version = release_tag
+
         artifacts = self._run_build_reproducible(repo, outdir)
         prov_path = self.build_provenance(repo, artifacts, outdir)
-        cdx_path, spdx_path, findings = self.generate_sboms(repo, outdir, project_name, project_version, vex)
+        cdx_path, spdx_path, findings = self.generate_sboms(repo, outdir, project_name, project_version, vex, vex_list=vex_false_positives or [])
 
         # Sign and verify (fail-closed on any issue)
         self._sign_and_verify([cdx_path, spdx_path, prov_path])
@@ -958,7 +980,6 @@ class SBOMSentinel:
             "halted": bool(findings),
         }
         if findings:
-            # Fail closed but return result for inspection
             raise self.PipelineError("Typosquat suspicion detected; pipeline halted.")
         return result
 
@@ -998,7 +1019,6 @@ def cmd_analyze(args: argparse.Namespace) -> int:
         else:
             roots = set(packages.keys())
     else:
-        # Use current interpreter environment
         candidate = None
         if hasattr(sys, "base_prefix"):
             candidate = Path(sys.prefix)
@@ -1030,7 +1050,6 @@ def cmd_analyze(args: argparse.Namespace) -> int:
 
     if findings:
         Log.error("Typosquat suspicion detected; failing closed.")
-        # Emit evidence
         evidence = []
         for f in findings:
             evidence.append(dataclasses.asdict(f))
@@ -1133,7 +1152,6 @@ def cmd_pipeline(args: argparse.Namespace) -> int:
     # 2. Analyze dependencies and generate SBOMs (CycloneDX prioritised)
     project_name = args.project_name or src.name
     project_version = args.project_version or "0.0.0"
-    # Use current environment (or provided venv) to resolve dependencies
     tmp_args = argparse.Namespace(
         project_name=project_name,
         project_version=project_version,
