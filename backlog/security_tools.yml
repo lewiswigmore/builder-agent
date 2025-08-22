@@ -317,7 +317,7 @@ security_tools:
     while preserving SHA-256 evidence in a sealed manifest, and denies any write attempts
     to the firmware path (read-only enforcement observed in logs).
   ready: true
-  status: in_progress
+  status: needs_work
   area_allowlist:
   - tools/iot_security/fuzzfox.py
   - tests/test_iot_003.py
