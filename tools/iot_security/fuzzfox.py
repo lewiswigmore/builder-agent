@@ -280,11 +280,14 @@ class PassiveDiscovery:
         # Probe local subnet gateways to detect services
         common = [("mqtt", 1883), ("coap", 5683)]
         ips = []
-        base = socket.gethostbyname(socket.gethostname())
-        parts = base.split(".")
-        if len(parts) == 4:
-            prefix = ".".join(parts[:3])
-            ips = [f"{prefix}.{i}" for i in range(1, 255)]
+        try:
+            base = socket.gethostbyname(socket.gethostname())
+            parts = base.split(".")
+            if len(parts) == 4:
+                prefix = ".".join(parts[:3])
+                ips = [f"{prefix}.{i}" for i in range(1, 255)]
+        except Exception:
+            ips = []
         random.shuffle(ips)
         ips = ips[:32]  # limit
         for ip in ips:
@@ -536,6 +539,17 @@ def load_signed_rules(rule_pack: Optional[str], sig_path: Optional[str], pubkey_
                     rules.append({"name": r["name"], "regex": r["regex"]})
         except Exception as e:
             LOG.error("Failed to parse rule pack: %s", e)
+    elif rule_pack and allow_unsigned:
+        # Load unsigned rule pack explicitly if allowed
+        try:
+            with open(rule_pack, "r", encoding="utf-8") as f:
+                pack = json.load(f)
+            for r in pack.get("rules", []):
+                if "name" in r and "regex" in r:
+                    rules.append({"name": r["name"], "regex": r["regex"]})
+            LOG.warning("Loaded unsigned rule pack (allow-unsigned enabled).")
+        except Exception as e:
+            LOG.error("Failed to parse unsigned rule pack: %s", e)
     if not rules:
         rules = DEFAULT_SECRET_RULES
         LOG.info("Using default built-in secret detection rules.")
@@ -573,33 +587,45 @@ class ReadOnlyDirGuard:
                 p = Path(dirpath, f)
                 with contextlib.suppress(Exception):
                     p.chmod(0o444)
-        self._orig_open = builtins.open
-        self._orig_os_open = os.open
+        self._orig_open = None
+        self._orig_os_open = None
         def _guarded_open(file, mode='r', *args, **kwargs):
-            fp = Path(file).resolve()
-            if fp.is_relative_to(self.root) if hasattr(fp, "is_relative_to") else str(fp).startswith(str(self.root)):
-                if any(c in mode for c in ("w", "a", "+")):
-                    self.log.warning("Denied write attempt to read-only firmware path: %s (mode %s)", fp, mode)
-                    raise PermissionError("Read-only enforcement")
-            return self._orig_open(file, mode, *args, **kwargs)
+            from pathlib import Path as _Path
+            fp = _Path(file).resolve()
+            # Python 3.9 compatibility: emulate is_relative_to
+            rel = str(fp).startswith(str(self.root))
+            if rel and any(c in mode for c in ("w", "a", "+")):
+                self.log.warning("Denied write attempt to read-only firmware path: %s (mode %s)", fp, mode)
+                raise PermissionError("Read-only enforcement")
+            return _orig_open(file, mode, *args, **kwargs)
         def _guarded_os_open(file, flags, *args, **kwargs):
-            fp = Path(file).resolve()
-            if fp.is_relative_to(self.root) if hasattr(fp, "is_relative_to") else str(fp).startswith(str(self.root)):
-                if flags & (os.O_WRONLY | os.O_RDWR | os.O_APPEND | getattr(os, "O_CREAT", 0)):
-                    self.log.warning("Denied write attempt to read-only firmware path: %s (flags %s)", fp, flags)
-                    raise PermissionError("Read-only enforcement")
-            return self._orig_os_open(file, flags, *args, **kwargs)
+            from pathlib import Path as _Path
+            fp = _Path(file).resolve()
+            rel = str(fp).startswith(str(self.root))
+            if rel and flags & (os.O_WRONLY | os.O_RDWR | os.O_APPEND | getattr(os, "O_CREAT", 0)):
+                self.log.warning("Denied write attempt to read-only firmware path: %s (flags %s)", fp, flags)
+                raise PermissionError("Read-only enforcement")
+            return _orig_os_open(file, flags, *args, **kwargs)
         import builtins as _b
-        globals()['builtins'] = _b
-        builtins.open = _guarded_open
+        # Save originals
+        _orig_open = _b.open
+        _orig_os_open = os.open
+        self._orig_open = _orig_open
+        self._orig_os_open = _orig_os_open
+        # Patch
+        _b.open = _guarded_open
         os.open = _guarded_os_open
         return self
 
     def __exit__(self, exc_type, exc, tb):
-        if self._orig_open:
-            builtins.open = self._orig_open
-        if self._orig_os_open:
-            os.open = self._orig_os_open
+        try:
+            import builtins as _b
+            if self._orig_open:
+                _b.open = self._orig_open
+            if self._orig_os_open:
+                os.open = self._orig_os_open
+        except Exception:
+            pass
         # Restore permissions best-effort
         for dirpath, dirnames, filenames in os.walk(self.root):
             for d in dirnames:
@@ -768,6 +794,61 @@ def sha256_file(path: str) -> str:
         for chunk in iter(lambda: f.read(8192), b""):
             h.update(chunk)
     return h.hexdigest()
+
+class FuzzFox:
+    """
+    FuzzFox IoT - Passive discovery, firmware analysis, and protocol-aware fuzzing with isolation.
+
+    Note: Use only with explicit authorization and within isolated lab networks.
+    """
+    def __init__(self, logger: Optional[logging.Logger] = None):
+        self.log = logger or LOG
+        self.version = VERSION
+        self.ethical_warning = ETHICAL_WARNING
+
+    # Passive device discovery
+    def discover(self, timeout: float = 5.0) -> List[Dict]:
+        d = PassiveDiscovery()
+        return d.discover(timeout=timeout)
+
+    # Namespace operations
+    def setup_namespace(self, name: str, targets: List[str]) -> Dict:
+        nm = setup_namespace(name, targets)
+        return {"namespace": name, "host_if": nm.host_if, "ns_if": nm.ns_if, "targets": targets}
+
+    def teardown_namespace(self, name: str) -> Dict:
+        teardown_namespace(name)
+        return {"namespace": name, "status": "deleted"}
+
+    def counters(self, name: str) -> Dict:
+        nm = NamespaceManager(name)
+        return nm.counters()
+
+    # Fuzzing
+    def fuzz(self, protocol: str, target: str, port: Optional[int] = None, pps: int = DEFAULT_PPS, duration: int = 30, namespace: Optional[str] = None) -> Dict:
+        nsname = namespace
+        if require_root() and not nsname:
+            # Create ephemeral namespace allowing only target to ensure microsegmentation
+            nsname = f"{NS_PREFIX}-{int(time.time())}-{random.randint(100,999)}"
+            nm = NamespaceManager(nsname)
+            nm.create([target])
+            try:
+                res = start_fuzzer(nsname, protocol, target, port, pps, duration)
+            finally:
+                nm.destroy()
+        else:
+            res = start_fuzzer(nsname, protocol, target, port, pps, duration)
+        if nsname:
+            res["counters"] = NamespaceManager(nsname).counters()
+        return res
+
+    def kill(self, reason: str = "manual") -> Dict:
+        KILL.trigger(reason)
+        return {"kill": True, "reason": reason}
+
+    # Firmware analysis
+    def firmware_scan(self, archive: str, output: str, rule_pack: Optional[str] = None, signature: Optional[str] = None, pubkey: Optional[str] = None, allow_unsigned: bool = False) -> Dict:
+        return firmware_scan(archive, rule_pack, signature, pubkey, output, allow_unsigned=allow_unsigned)
 
 def main():
     print(ETHICAL_WARNING, file=sys.stderr)
