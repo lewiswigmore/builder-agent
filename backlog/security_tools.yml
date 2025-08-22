@@ -256,7 +256,7 @@ security_tools:
     (data filter + fine-tune), and on rerun with the same seed reproduces byte-identical
     adversarial samples and identical manifest hashes for all exported artifacts.
   ready: true
-  status: in_progress
+  status: needs_work
   area_allowlist:
   - tools/ai_security/adversarial_canary.py
   - tests/test_ai_001.py
