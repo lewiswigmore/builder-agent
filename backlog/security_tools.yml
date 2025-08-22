@@ -287,7 +287,7 @@ security_tools:
     checks fail closed, the build is blocked, and rerunning the full pipeline yields
     identical SBOM and attestation digests.
   ready: true
-  status: todo
+  status: needs_work
   area_allowlist:
   - tools/supply_chain/sbom_sentinel.py
   - tests/test_sc_002.py
@@ -397,4 +397,81 @@ security_tools:
   area_allowlist:
   - tools/supply_chain/hermes_sentinel.py
   - tests/test_supply_chain_003.py
+  max_changed_lines: 700
+- id: CLD-001
+  title: LambdaShield
+  category: cloud_security
+  description: Agentless multi-cloud serverless and container runtime protection with
+    policy-as-code verification, runtime anomaly detection, and automated least-privilege
+    remediation across AWS, Azure, and GCP.
+  security_requirements:
+  - Discover and inventory AWS Lambda, Azure Functions, GCP Cloud Functions, and container
+    workloads with CSPM baselines and drift detection.
+  - Behavioral allowlisting and anomaly detection for runtime (syscalls, DNS, network
+    egress); serverless extensions capture outbound calls; block unauthorized egress
+    in real time.
+  - Policy-as-code (OPA/Rego) with signed policies and mandatory signature verification;
+    tamper-proof change approvals and audit trail.
+  - Automated least-privilege IAM and permission constraint recommendations with safe
+    auto-remediation and rollback.
+  - SBOM-driven layer and image scanning with critical CVE detection, embedded secret
+    discovery, and CI/CD gate enforcement.
+  - Cross-account and cross-cloud trust graphing to detect risky role assumptions,
+    external principal abuse, and attack paths.
+  acceptance_tests:
+  - Deploy a serverless function attempting data exfiltration to an unauthorized domain;
+    system blocks the egress and emits a high-severity finding with full call graph
+    within 30 seconds.
+  - Introduce an IAM trust misconfiguration enabling external account assumeRole;
+    tool detects the risky path, proposes least-privilege fix, and successfully simulates
+    one-click remediation with rollback capability.
+  - Build and push a container image containing a critical CVE and an exposed secret;
+    SBOM scanner flags both, fails the CI gate, and blocks deployment via signed policy
+    enforcement.
+  - Submit a tampered OPA policy to the pipeline; signature verification fails and
+    the pipeline halts with an immutable audit record and provenance details.
+  ready: true
+  status: todo
+  area_allowlist:
+  - tools/cloud_security/lambdashield.py
+  - tests/test_cld_001.py
+  max_changed_lines: 700
+- id: SC-001
+  title: SigChain Guardian
+  category: supply_chain
+  description: End-to-end software supply chain integrity platform that generates
+    provenance-attested SBOMs, verifies signatures and attestations (Sigstore/in-toto),
+    enforces SLSA policies, and detects dependency confusion and typosquatting.
+  security_requirements:
+  - Produce comprehensive SBOMs (CycloneDX/SPDX) for polyglot repos, including containers,
+    serverless layers, and mobile packages, with provenance attestations.
+  - Verify artifact signatures using keyless Sigstore (Fulcio/Rekor) and validate
+    in-toto attestations; enforce SLSA L3+ policy gates.
+  - Detect typosquatting and dependency confusion across private/public registries
+    via DNS, namespace, and maintainer heuristic analysis.
+  - Perform reproducible build verification with hermetic builds and bit-for-bit artifact
+    comparison; flag non-determinism with root-cause hints.
+  - Continuously diff dependencies and compute risk scores based on exploit maturity,
+    maintainer reputation, and change blast radius; trigger approvals when thresholds
+    are exceeded.
+  - Persist transparency log mirrors and provide tamper-evident Merkle inclusion proofs
+    with periodic audit reconciliation.
+  acceptance_tests:
+  - Publish a malicious transitive package to a private registry that shadows a public
+    name; resolution attempt is blocked as dependency confusion, with a high-risk
+    alert and remediation guidance.
+  - Sign a build artifact with an expired certificate; verification fails, Rekor inclusion
+    proof does not validate, and the release gate is blocked with actionable diagnostics.
+  - Generate SBOM for a repo combining Python, Node.js, container images, and a serverless
+    layer; tool achieves 100% coverage with accurate component provenance and passes
+    SLSA L3 policy checks.
+  - Rebuild an artifact in a hermetic environment and detect non-deterministic timestamps;
+    system flags the issue and provides diff-based root-cause hints.
+  - Attempt to remove entries from the transparency log mirror; tamper-evident verification
+    fails and an alert is raised containing Merkle proof inconsistencies.
+  ready: true
+  status: todo
+  area_allowlist:
+  - tools/supply_chain/sigchain_guardian.py
+  - tests/test_sc_001.py
   max_changed_lines: 700
