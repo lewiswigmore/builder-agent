@@ -12,6 +12,7 @@ import socket
 import sys
 import threading
 import time
+import zipfile
 from contextlib import contextmanager
 from dataclasses import dataclass, asdict
 from typing import Any, Dict, Iterable, List, Optional, Tuple
@@ -303,14 +304,26 @@ def compute_confusion_delta(cm_clean: np.ndarray, cm_adv: np.ndarray) -> np.ndar
 
 
 def save_npz_deterministic(path: str, arrays: Dict[str, np.ndarray]) -> None:
-    # Deterministic save: sort keys, use compressed to reduce size
+    # Deterministic NPZ writer: fixed entry order, fixed timestamps/attrs, deterministic compression
     keys = sorted(arrays.keys())
-    # Build in-memory buffer to ensure deterministic order
-    with io.BytesIO() as buf:
-        np.savez_compressed(buf, **{k: arrays[k] for k in keys})
-        data = buf.getvalue()
-    # Write bytes atomically
+    # Prepare .npy payloads deterministically
+    npy_payloads: Dict[str, bytes] = {}
+    for k in keys:
+        with io.BytesIO() as b:
+            np.save(b, arrays[k], allow_pickle=False, fix_imports=False)
+            npy_payloads[k] = b.getvalue()
+    # Build zip with fixed metadata
     tmp = path + ".tmp"
+    with io.BytesIO() as zbuf:
+        with zipfile.ZipFile(zbuf, mode="w", compression=zipfile.ZIP_DEFLATED, compresslevel=9) as zf:
+            for k in keys:
+                info = zipfile.ZipInfo(filename=f"{k}.npy")
+                info.date_time = (1980, 1, 1, 0, 0, 0)
+                info.compress_type = zipfile.ZIP_DEFLATED
+                info.create_system = 0  # consistent across platforms
+                info.external_attr = 0o600 << 16  # -rw-------
+                zf.writestr(info, npy_payloads[k])
+        data = zbuf.getvalue()
     with open(tmp, "wb") as f:
         f.write(data)
     os.replace(tmp, path)
@@ -623,7 +636,8 @@ def run_adversarial_suite(
         "dataset_sha256": dataset_sha,
         "seed": seed,
         "results": [asdict(r) for r in results],
-        "generated_at": datetime.datetime.utcnow().replace(microsecond=0).isoformat() + "Z",
+        # Deterministic timestamp for reproducibility
+        "generated_at": "1970-01-01T00:00:00Z",
     }
     report_path = os.path.join(out_dir, "report.json")
     with open(report_path, "w", encoding="utf-8") as f:
