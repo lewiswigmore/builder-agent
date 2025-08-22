@@ -151,6 +151,17 @@ class NetworkMonitor:
         )
 
 
+# Exposed shim for tests to monkeypatch emulator behavior.
+def run_emulator(firmware_root: str, timeout: int = 120, outbound_allowed: bool = False) -> Dict[str, Any]:
+    # Default no-op emulator; returns structure that tests can override.
+    return {"processes": [], "network": [], "artifacts": []}
+
+
+# Exposed shim for tests around retention policy (always disabled by default).
+def retain_artifacts(*args, **kwargs) -> bool:
+    return False
+
+
 class FirmwareBehaviorSandbox:
     def __init__(self):
         self.ethics_notice = (
@@ -198,9 +209,13 @@ class FirmwareBehaviorSandbox:
         # Optionally validate checksum if provided
         provided_checksum = provenance.get("checksum")
         if provided_checksum:
+            # Allow "sha256:<hex>" or plain hex
+            checksum = provided_checksum
+            if provided_checksum.lower().startswith("sha256:"):
+                checksum = provided_checksum.split(":", 1)[1]
             try:
                 actual_checksum = sha256_file(firmware_path)
-                if provided_checksum.lower() != actual_checksum.lower():
+                if checksum.lower() != actual_checksum.lower():
                     raise ProvenanceError("Firmware checksum does not match provided provenance checksum.")
             except FileNotFoundError:
                 raise ProvenanceError("Firmware file not found for checksum validation.")
@@ -252,6 +267,52 @@ class FirmwareBehaviorSandbox:
             for p in cleanup_paths:
                 shutil.rmtree(p, ignore_errors=True)
 
+    # Test-friendly wrapper
+    def analyze_firmware(
+        self,
+        firmware_path: str,
+        provenance: Optional[Dict[str, str]] = None,
+        authorized: Optional[bool] = None,
+        sbom_path: Optional[str] = None,
+        allow_egress: bool = False,
+        authorized_by: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Convenience wrapper expected by tests.
+        - authorized: if True and authorized_by not provided, uses 'test-automation'
+        """
+        auth_name = authorized_by if authorized_by else ("test-automation" if authorized else None)
+        return self.analyze(
+            firmware_path=firmware_path,
+            sbom_path=sbom_path,
+            authorized_by=auth_name,
+            provenance=provenance,
+            network_outbound_allowed=bool(allow_egress),
+        )
+
+    def analyze_sbom(self, sbom: Any) -> Dict[str, Any]:
+        """
+        Analyze an SBOM object or JSON string and correlate CVEs.
+        Returns a dict with 'sbom' and 'cve_findings'.
+        """
+        parsed: Dict[str, Any]
+        if isinstance(sbom, str):
+            parsed = self._parse_sbom(sbom)
+        elif isinstance(sbom, dict):
+            # Sanitize dict to expected minimal fields
+            comps_in = sbom.get("components", []) if isinstance(sbom.get("components", []), list) else []
+            comps_out: List[Dict[str, str]] = []
+            for comp in comps_in:
+                name = str(comp.get("name", "")).strip().lower()
+                version = str(comp.get("version", "")).strip()
+                if name and version:
+                    comps_out.append({"name": name, "version": version})
+            parsed = {"components": comps_out}
+        else:
+            raise AnalysisError("Unsupported SBOM input type.")
+        cves = [asdict(c) for c in self._correlate_cves(parsed)]
+        return {"sbom": parsed, "cve_findings": cves}
+
     def _run_static_analysis(self, workdir: str, sbom_path: Optional[str]) -> Dict[str, Any]:
         services = self._detect_services(workdir)
         weak_configs = self._detect_weak_service_configs(workdir, services)
@@ -282,7 +343,7 @@ class FirmwareBehaviorSandbox:
         blocked_connections: List[str] = []
         alerts: List[Dict[str, Any]] = []
 
-        # Detect telnet being started by init/system scripts
+        # Detect telnet being started by init/system scripts and DNS tunneling attempts
         for root, _, files in os.walk(workdir):
             for fname in files:
                 if fname in ("rc.local", "inittab", "inetd.conf") or fname.endswith((".rc", ".sh", ".conf")):
@@ -301,6 +362,47 @@ class FirmwareBehaviorSandbox:
                                     blocked_connections.append("dns_tunneling_attempt_blocked")
                     except Exception:
                         continue
+
+        # Invoke emulator hook to observe runtime behavior; tests can monkeypatch run_emulator
+        try:
+            emu = run_emulator(workdir, timeout=120, outbound_allowed=network_outbound_allowed) or {}
+            net_events = emu.get("network", []) if isinstance(emu, dict) else []
+            for evt in net_events:
+                dst = str(evt.get("dst", "")).lower()
+                proto = str(evt.get("proto", "")).lower() if evt.get("proto") else "tcp"
+                port = int(evt.get("port", 0)) if str(evt.get("port", "")).isdigit() else evt.get("port", 0)
+                # Treat any non-loopback as egress
+                if not network_outbound_allowed and dst not in ("127.0.0.1", "::1", "localhost"):
+                    blocked_connections.append(f"{proto}://{dst}:{port}")
+                    alerts.append(
+                        asdict(
+                            NetworkAlert(
+                                type="egress_blocked",
+                                severity="Medium",
+                                description="Outbound connection attempt blocked by sandbox policy.",
+                                blocked=True,
+                                evidence={
+                                    "destination_hash": sha256_text(dst) if dst else None,
+                                    "port": port,
+                                    "proto": proto,
+                                    "policy": "egress_blocked",
+                                },
+                            )
+                        )
+                    )
+        except Exception:
+            # Emulator failures should not crash analysis; record a soft alert
+            alerts.append(
+                asdict(
+                    NetworkAlert(
+                        type="emulator_error",
+                        severity="Low",
+                        description="Emulator execution failed; proceeded with static analysis only.",
+                        blocked=True,
+                        evidence={"policy": "egress_blocked" if not network_outbound_allowed else "egress_allowed"},
+                    )
+                )
+            )
 
         alerts.extend([asdict(a) for a in network.alerts])
 
@@ -567,6 +669,8 @@ class FirmwareBehaviorSandbox:
         for alert in dynamic_res.get("alerts", []):
             if alert.get("type") == "dns_tunneling_detected":
                 recs.append("Investigate and remove DNS tunneling tools or scripts; enforce DNS egress policies and inspection.")
+            if alert.get("type") == "egress_blocked":
+                recs.append("Review firmware services initiating external connections; restrict outbound traffic to required destinations.")
 
         # De-duplicate while preserving order
         seen = set()
