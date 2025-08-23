@@ -393,7 +393,7 @@ security_tools:
     is flagged as potential typosquat with >95% confidence using lexical and publisher
     heuristics.
   ready: true
-  status: in_progress
+  status: needs_work
   area_allowlist:
   - tools/supply_chain/hermes_sentinel.py
   - tests/test_supply_chain_003.py
