@@ -31,7 +31,7 @@ import threading
 import time
 import uuid
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, asdict
 from typing import Any, Callable, Dict, List, Optional, Tuple, Set
 from copy import deepcopy
 
@@ -897,6 +897,38 @@ def _ensure_default_workload(allowlist: Optional[List[str]] = None) -> str:
     return wid
 
 
+def _finding_to_dict(f: Optional[Finding]) -> Optional[Dict[str, Any]]:
+    if f is None:
+        return None
+    try:
+        d = asdict(f)
+    except Exception:
+        d = {
+            "id": f.id,
+            "ts": f.ts,
+            "severity": f.severity,
+            "type": f.type,
+            "message": f.message,
+            "details": f.details,
+        }
+    return d
+
+
+def _extract_event_fields(event: Any) -> Tuple[str, Optional[str], str, int, List[str]]:
+    # Robustly extract fields from diverse event representations
+    if isinstance(event, dict):
+        host = event.get("dest_host") or event.get("domain") or event.get("host") or event.get("destination") or "unknown"
+        ip = event.get("dest_ip") or event.get("ip")
+        protocol = (event.get("protocol") or "https").lower()
+        port = int(event.get("dest_port") or event.get("port") or (443 if protocol == "https" else 80))
+        trace = event.get("trace") or event.get("call_graph") or event.get("stack") or event.get("path") or []
+        if isinstance(trace, str):
+            trace = [trace]
+        return host, ip, protocol, port, list(trace)
+    # Fallbacks
+    return str(event), None, "https", 443, []
+
+
 # Egress allowlist configuration
 def configure_allowlist(allowlist: List[str]) -> Dict[str, Any]:
     """
@@ -929,7 +961,9 @@ def configure_egress_allowlist(allowlist: List[str]) -> Dict[str, Any]:
 # Attempt outbound/egress and capture result
 def attempt_egress(domain: str, dest_ip: Optional[str] = None, protocol: str = "https", port: int = 443, trace: Optional[List[str]] = None) -> Dict[str, Any]:
     wid = _ensure_default_workload()
-    return _shield().attempt_outbound_call(wid, domain, dest_ip=dest_ip, protocol=protocol, port=port, trace=trace or [], actor="tests")
+    res = _shield().attempt_outbound_call(wid, domain, dest_ip=dest_ip, protocol=protocol, port=port, trace=trace or [], actor="tests")
+    # Convert finding to dict for adapters
+    return {"allowed": res["allowed"], "blocked": res["blocked"], "finding": _finding_to_dict(res.get("finding"))}
 
 
 def attempt_outbound(domain: str, dest_ip: Optional[str] = None, protocol: str = "https", port: int = 443, trace: Optional[List[str]] = None) -> Dict[str, Any]:
@@ -940,11 +974,47 @@ def outbound_call(domain: str, dest_ip: Optional[str] = None, protocol: str = "h
     return attempt_egress(domain, dest_ip, protocol, port, trace)
 
 
+# Runtime event entry points expected by adapters
+def handle_outbound_call(event: Any) -> Dict[str, Any]:
+    """
+    Process a runtime outbound event and enforce egress policies.
+    """
+    host, ip, proto, port, trace = _extract_event_fields(event)
+    return attempt_egress(host, dest_ip=ip, protocol=proto, port=port, trace=trace)
+
+
+def check_egress(event: Any) -> Dict[str, Any]:
+    return handle_outbound_call(event)
+
+
+def handle_runtime_event(event: Any) -> Dict[str, Any]:
+    return handle_outbound_call(event)
+
+
+def process_runtime_event(event: Any) -> Dict[str, Any]:
+    return handle_outbound_call(event)
+
+
+def monitor_runtime(event: Any) -> Dict[str, Any]:
+    return handle_outbound_call(event)
+
+
+def enforce_runtime_policies(event: Any) -> Dict[str, Any]:
+    return handle_outbound_call(event)
+
+
 # Discovery/inventory
-def discover_inventory(clouds: List[str]) -> List[Dict[str, Any]]:
+def discover_inventory(clouds: List[str]) -> Dict[str, Any]:
     """
     Discover and register workloads for the requested clouds.
     clouds items: "aws", "azure", "gcp", "containers"
+
+    Returns:
+      {
+        "workloads": [ ... ],
+        "count": int,
+        "clouds": [...],
+      }
     """
     _ensure_accounts()
     discovered: List[Dict[str, Any]] = []
@@ -952,41 +1022,53 @@ def discover_inventory(clouds: List[str]) -> List[Dict[str, Any]]:
         c = c.lower()
         if c == "aws":
             wid = _shield().deploy_serverless_function("aws", "111111111111", "awsProcessor", allowlist_domains=["api.trusted.local"], actor="discover")
-            discovered.append(_shield().inventory.get_workload(wid).__dict__)
+            w = _shield().inventory.get_workload(wid)
+            d = asdict(w)
+            d["allowlist_domains"] = sorted(list(d.get("allowlist_domains", [])))
+            discovered.append(d)
         elif c == "azure":
             # Simulate Azure Function
             wid = f"azure:tenant-0000:function:azProcessor"
             wl = Workload(id=wid, provider="azure", account="tenant-0000", kind="function", name="azProcessor", allowlist_domains={"graph.microsoft.com"})
             _shield().inventory.register_workload(wl, actor="discover")
             _shield().runtime.register_workload(wid, wl.allowlist_domains)
-            discovered.append(_shield().inventory.get_workload(wid).__dict__)
+            w = _shield().inventory.get_workload(wid)
+            d = asdict(w)
+            d["allowlist_domains"] = sorted(list(d.get("allowlist_domains", [])))
+            discovered.append(d)
         elif c == "gcp":
             wid = f"gcp:project-0000:cloudfunction:gcpProcessor"
             wl = Workload(id=wid, provider="gcp", account="project-0000", kind="cloudfunction", name="gcpProcessor", allowlist_domains={"storage.googleapis.com"})
             _shield().inventory.register_workload(wl, actor="discover")
             _shield().runtime.register_workload(wid, wl.allowlist_domains)
-            discovered.append(_shield().inventory.get_workload(wid).__dict__)
+            w = _shield().inventory.get_workload(wid)
+            d = asdict(w)
+            d["allowlist_domains"] = sorted(list(d.get("allowlist_domains", [])))
+            discovered.append(d)
         elif c in {"containers", "k8s", "container"}:
             wid = f"k8s:cluster-1:container:service-backend"
             wl = Workload(id=wid, provider="k8s", account="cluster-1", kind="container", name="service-backend", allowlist_domains={"registry.local"})
             _shield().inventory.register_workload(wl, actor="discover")
             _shield().runtime.register_workload(wid, wl.allowlist_domains)
-            discovered.append(_shield().inventory.get_workload(wid).__dict__)
+            w = _shield().inventory.get_workload(wid)
+            d = asdict(w)
+            d["allowlist_domains"] = sorted(list(d.get("allowlist_domains", [])))
+            discovered.append(d)
         else:
             # Ignore unknown clouds to keep discovery robust
             continue
-    return discovered
+    return {"workloads": discovered, "count": len(discovered), "clouds": [c.lower() for c in clouds]}
 
 
-def discover_and_inventory(clouds: List[str]) -> List[Dict[str, Any]]:
+def discover_and_inventory(clouds: List[str]) -> Dict[str, Any]:
     return discover_inventory(clouds)
 
 
-def inventory(clouds: List[str]) -> List[Dict[str, Any]]:
+def inventory(clouds: List[str]) -> Dict[str, Any]:
     return discover_inventory(clouds)
 
 
-def discover(clouds: List[str]) -> List[Dict[str, Any]]:
+def discover(clouds: List[str]) -> Dict[str, Any]:
     return discover_inventory(clouds)
 
 
@@ -1005,7 +1087,26 @@ def detect_drift() -> List[Finding]:
 # SBOM scanning and CI gate
 def scan_image(sbom: Optional[Dict[str, Any]] = None, files: Optional[Dict[str, str]] = None, image: str = "test/image:latest") -> Dict[str, Any]:
     findings = _shield().scanner.scan_image(image, sbom_json=sbom, file_manifest=files, actor="scanner")
-    return {"image": image, "findings": findings}
+    # Summarize for adapters
+    summary = {
+        "image": image,
+        "findings": [_finding_to_dict(f) for f in findings],
+        "critical_vulns": 0,
+        "secrets_found": 0,
+        "vulns": {"critical": 0, "high": 0, "medium": 0, "low": 0},
+        "secrets": [],
+    }
+    for f in findings:
+        if f.type == "SBOM.Vulnerability":
+            sev = f.severity.upper()
+            if sev in summary["vulns"]:
+                summary["vulns"][sev] += 1
+            if sev == "CRITICAL":
+                summary["critical_vulns"] += 1
+        if f.type == "SBOM.Secret":
+            summary["secrets_found"] += 1
+            summary["secrets"].append({"id": f.id, "path": f.details.get("path"), "match": f.details.get("match")})
+    return summary
 
 
 def scan_sbom(sbom: Optional[Dict[str, Any]] = None, files: Optional[Dict[str, str]] = None, image: str = "test/image:latest") -> Dict[str, Any]:
@@ -1016,7 +1117,7 @@ def sbom_scan(sbom: Optional[Dict[str, Any]] = None, files: Optional[Dict[str, s
     return scan_image(sbom, files, image)
 
 
-def enforce_ci_gate(scan: Optional[Dict[str, Any]] = None, findings: Optional[List[Finding]] = None) -> GateResult:
+def enforce_ci_gate(scan: Optional[Dict[str, Any]] = None, findings: Optional[List[Finding]] = None) -> Dict[str, Any]:
     # Ensure an active signed policy exists
     try:
         _shield().policies.get_active_policy()
@@ -1031,11 +1132,22 @@ def enforce_ci_gate(scan: Optional[Dict[str, Any]] = None, findings: Optional[Li
     fnds: List[Finding]
     if findings is not None:
         fnds = findings
-    elif scan and isinstance(scan, dict) and "findings" in scan:
-        fnds = scan["findings"]
+    elif scan and isinstance(scan, dict):
+        # Convert dict-based findings back to minimal Finding objects if present
+        if "findings" in scan and isinstance(scan["findings"], list):
+            tmp: List[Finding] = []
+            for d in scan["findings"]:
+                try:
+                    tmp.append(Finding(id=d.get("id", _uuid()), ts=d.get("ts", _now()), severity=d.get("severity", "LOW"), type=d.get("type", "Unknown"), message=d.get("message", ""), details=d.get("details", {})))
+                except Exception:
+                    continue
+            fnds = tmp
+        else:
+            fnds = []
     else:
         fnds = []
-    return _shield().policies.enforce_ci_gate(fnds, actor="pipeline")
+    result = _shield().policies.enforce_ci_gate(fnds, actor="pipeline")
+    return {"allowed": result.allowed, "blocked": not result.allowed, "reasons": result.reasons, "policy_id": result.policy_id, "finding_ids": [f.id for f in fnds]}
 
 
 # Policy helpers
@@ -1060,18 +1172,24 @@ def verify_policy_signature(policy: Dict[str, Any], secret: Optional[str] = None
     return ok
 
 
-def submit_signed_policy(policy: Dict[str, Any]) -> RegoPolicy:
+def submit_signed_policy(policy: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Submit a signed policy; raises SignatureVerificationError on invalid signature.
+    Submit a signed policy; returns a status dict.
+    On invalid signature, returns accepted=False and includes error details.
     """
     name = policy.get("name", "policy")
     content = policy.get("content", "")
     signature = policy.get("signature", "")
     provenance = policy.get("provenance", {})
-    return _shield().submit_policy(name, content, signature, provenance, actor="pipeline")
+    try:
+        pol = _shield().submit_policy(name, content, signature, provenance, actor="pipeline")
+        return {"accepted": True, "policy_id": pol.id, "name": pol.name, "flags": pol.flags}
+    except SignatureVerificationError as e:
+        # Pipeline halts but returns structured status for adapters
+        return {"accepted": False, "error": str(e), "name": name, "provenance": provenance}
 
 
-def submit_policy(policy: Dict[str, Any]) -> RegoPolicy:
+def submit_policy(policy: Dict[str, Any]) -> Dict[str, Any]:
     return submit_signed_policy(policy)
 
 
@@ -1109,10 +1227,23 @@ def detect_trust_misconfig(graph: Any) -> Dict[str, Any]:
         _shield().trust.add_trust(src, dst, conditions=cond, actor="cspm")
     risky = _shield().trust.detect_risky_paths()
     proposal: Optional[Dict[str, Any]] = None
+    findings: List[Dict[str, Any]] = []
     if risky:
         proposal = _shield().trust.propose_least_privilege_fix(risky[0])
         _shield().audit.append("iam.risky_detected", "cspm", {"risky": risky, "proposal": proposal})
-    return {"risky": risky, "proposal": proposal}
+        # Create human-friendly findings
+        for rp in risky:
+            findings.append(
+                {
+                    "id": _uuid(),
+                    "ts": _now(),
+                    "severity": "HIGH",
+                    "type": "IAM.ExternalTrust",
+                    "message": f"Cross-account trust detected from {rp['src']} to {rp['dst']}",
+                    "details": {"path": rp.get("path", []), "reason": rp.get("reason", "")},
+                }
+            )
+    return {"risky": risky, "risky_paths": risky, "proposal": proposal, "findings": findings}
 
 
 def detect_trust_misconfiguration(graph: Any) -> Dict[str, Any]:
