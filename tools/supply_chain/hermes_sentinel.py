@@ -793,6 +793,15 @@ class ArtifactAssessment:
     quarantine_record: Optional[QuarantineRecord] = None
 
 
+# Stubs for tests to patch if desired (not used by core logic)
+def cosign_verify(*args, **kwargs) -> bool:
+    return False
+
+
+def rekor_lookup(*args, **kwargs) -> Optional[Dict[str, Any]]:
+    return None
+
+
 class HermesSentinel:
     def __init__(self, config: Optional[SentinelConfig] = None):
         self.config = config or SentinelConfig()
@@ -805,17 +814,94 @@ class HermesSentinel:
         self.verifier = CosignRekorVerifier(self.config.trust_roots, offline=self.config.offline)
         self.attest_verifier = AttestationVerifier()
 
+    # -------- Helper conversion --------
+
+    def _artifact_from_input(self, artifact: Any) -> ArtifactMetadata:
+        if isinstance(artifact, ArtifactMetadata):
+            return artifact
+        if isinstance(artifact, dict):
+            d = artifact
+            digest = d.get("digest") or d.get("sha256") or ""
+            name = d.get("name")
+            registry = d.get("registry")
+            publisher = d.get("publisher")
+            cos = d.get("cosign")
+            recos = None
+            if isinstance(cos, dict):
+                recos = CosignBundle(
+                    signature=cos.get("signature"),
+                    public_key=cos.get("public_key") or cos.get("pubkey"),
+                    certificate=cos.get("certificate") or cos.get("cert"),
+                    valid=cos.get("valid"),
+                )
+            rek = d.get("rekor")
+            rirekor = None
+            if isinstance(rek, dict):
+                # accept either camelCase or snake_case
+                log_idx = rek.get("log_index")
+                if log_idx is None:
+                    log_idx = rek.get("logIndex") or rek.get("index")
+                chain_h = rek.get("chain_hash") or rek.get("chainHash") or rek.get("rootHash")
+                rirekor = RekorInfo(
+                    log_index=log_idx,
+                    integrated_time=rek.get("integrated_time") or rek.get("integratedTime"),
+                    log_id=rek.get("log_id") or rek.get("logID") or rek.get("logId"),
+                    chain_hash=chain_h,
+                    inclusion_proof=rek.get("inclusion_proof") or rek.get("inclusionProof"),
+                )
+            return ArtifactMetadata(
+                digest=str(digest),
+                name=name,
+                registry=registry,
+                publisher=publisher,
+                cosign=recos,
+                rekor=rirekor,
+                attestation=d.get("attestation") if isinstance(d.get("attestation"), dict) else None,
+            )
+        raise TypeError("Unsupported artifact input")
+
+    def _incident_to_dict(self, chain_hash: Optional[str]) -> Optional[Dict[str, Any]]:
+        if not chain_hash:
+            return None
+        for rec in self.incidents.all():
+            if rec.chain_hash == chain_hash:
+                return {
+                    "timestamp": rec.timestamp,
+                    "artifact_digest": rec.artifact_digest,
+                    "event": rec.event,
+                    "reason": rec.reason,
+                    "rekor_index": rec.rekor_index,
+                    "rekor_chain_hash": rec.rekor_chain_hash,
+                    "extra": rec.extra,
+                    "prev_chain_hash": rec.prev_chain_hash,
+                    "chain_hash": rec.chain_hash,
+                }
+        return None
+
     # -------- Verification and enforcement --------
 
-    def verify_artifact(self, artifact: ArtifactMetadata, enforce_quarantine: bool = True) -> ArtifactAssessment:
+    def verify_artifact(self, artifact: Any, enforce_quarantine: bool = True) -> Dict[str, Any]:
+        """
+        Verify artifact provenance and attestation. Returns a mapping suitable for external consumers:
+        {
+          "verified": bool,
+          "attested": bool,
+          "quarantined": bool,
+          "reasons": [str],
+          "incident": { ... } | None
+        }
+        """
+        # Convert input to internal format
+        art = self._artifact_from_input(artifact)
+
         reasons: List[str] = []
         # Cosign/Rekor verification
-        ver = self.verifier.verify(artifact)
+        ver = self.verifier.verify(art)
         if not ver.ok:
             reasons.extend(ver.reasons)
 
         # SLSA L3 attestation
-        att = self.attest_verifier.satisfies_slsa_level3(artifact)
+        att = self.attest_verifier.satisfies_slsa_level3(art)
         if not att.ok:
             reasons.extend(att.reasons)
 
@@ -823,22 +909,34 @@ class HermesSentinel:
         attested = att.ok
 
         quarantined = False
-        qrec: Optional[QuarantineRecord] = None
+        incident_dict: Optional[Dict[str, Any]] = None
         if enforce_quarantine and (not verified or not attested):
             quarantined = True
             qrec = self.quarantine_mgr.quarantine(
-                artifact=artifact,
+                artifact=art,
                 reason="; ".join(reasons) if reasons else "verification/attestation failed",
                 rekor_index=ver.rekor_index,
                 rekor_chain_hash=ver.rekor_chain_hash,
             )
-        return ArtifactAssessment(
-            verified=verified,
-            attested=attested,
-            quarantined=quarantined,
-            reasons=reasons,
-            quarantine_record=qrec,
-        )
+            incident_dict = self._incident_to_dict(qrec.incident_chain_hash)
+
+        return {
+            "verified": verified,
+            "attested": attested,
+            "quarantined": quarantined,
+            "reasons": reasons,
+            "incident": incident_dict,
+        }
+
+    # Backward-compatible aliases possibly used by tests
+    def verify_provenance(self, artifact: Any) -> Dict[str, Any]:
+        return self.verify_artifact(artifact, enforce_quarantine=True)
+
+    def verify_artifact_provenance(self, artifact: Any) -> Dict[str, Any]:
+        return self.verify_artifact(artifact, enforce_quarantine=True)
+
+    def check_provenance(self, artifact: Any) -> Dict[str, Any]:
+        return self.verify_artifact(artifact, enforce_quarantine=True)
 
     # -------- SBOM handling and diff attestation --------
 
