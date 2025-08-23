@@ -356,7 +356,7 @@ security_tools:
     nsenter) and raises a high-confidence alert within 5 seconds without collecting
     sensitive environment variables.
   ready: true
-  status: todo
+  status: in_progress
   area_allowlist:
   - tools/cloud_security/nebula_guard.py
   - tests/test_cloud_002.py
