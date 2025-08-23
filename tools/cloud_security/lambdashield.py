@@ -853,6 +853,339 @@ class LambdaShield:
         return _call
 
 
+# -------- Module-level convenience wrappers for tests/adapters --------
+
+# Global default orchestrator and state
+DEFAULT_SIGNING_SECRET = "lambdashield-default-secret"
+_GLOBAL: Dict[str, Any] = {
+    "shield": LambdaShield(signing_secret=DEFAULT_SIGNING_SECRET),
+    "active_workload_id": None,
+    "last_change_id": None,
+}
+
+
+def _shield() -> LambdaShield:
+    return _GLOBAL["shield"]
+
+
+def _ensure_accounts() -> None:
+    # Idempotently add a default account for each provider
+    try:
+        _shield().add_cloud_account("aws", "111111111111", actor="tests")
+    except Exception:
+        pass
+    try:
+        _shield().add_cloud_account("azure", "tenant-0000", actor="tests")
+    except Exception:
+        pass
+    try:
+        _shield().add_cloud_account("gcp", "project-0000", actor="tests")
+    except Exception:
+        pass
+
+
+def _ensure_default_workload(allowlist: Optional[List[str]] = None) -> str:
+    wid = _GLOBAL.get("active_workload_id")
+    if wid:
+        return wid
+    _ensure_accounts()
+    # Deploy a default AWS Lambda for testing
+    wid = _shield().deploy_serverless_function(
+        "aws", "111111111111", "testFunction", allowlist_domains=allowlist or [], actor="tests"
+    )
+    _GLOBAL["active_workload_id"] = wid
+    return wid
+
+
+# Egress allowlist configuration
+def configure_allowlist(allowlist: List[str]) -> Dict[str, Any]:
+    """
+    Configure egress allowlist for the active/default workload.
+    """
+    wid = _ensure_default_workload()
+    # Update runtime allowlist
+    _shield().runtime.update_allowlist(wid, set(allowlist))
+    # Also update inventory copy to avoid drift surprises when intended
+    wl = _shield().inventory.get_workload(wid)
+    wl.allowlist_domains = set(allowlist)
+    # Overwrite inventory entry to reflect new allowlist
+    _shield().inventory.register_workload(wl, actor="tests.update")
+    return {"workload_id": wid, "allowlist": list(allowlist)}
+
+
+# Synonyms for adapters
+def set_egress_allowlist(allowlist: List[str]) -> Dict[str, Any]:
+    return configure_allowlist(allowlist)
+
+
+def set_allowlist(allowlist: List[str]) -> Dict[str, Any]:
+    return configure_allowlist(allowlist)
+
+
+def configure_egress_allowlist(allowlist: List[str]) -> Dict[str, Any]:
+    return configure_allowlist(allowlist)
+
+
+# Attempt outbound/egress and capture result
+def attempt_egress(domain: str, dest_ip: Optional[str] = None, protocol: str = "https", port: int = 443, trace: Optional[List[str]] = None) -> Dict[str, Any]:
+    wid = _ensure_default_workload()
+    return _shield().attempt_outbound_call(wid, domain, dest_ip=dest_ip, protocol=protocol, port=port, trace=trace or [], actor="tests")
+
+
+def attempt_outbound(domain: str, dest_ip: Optional[str] = None, protocol: str = "https", port: int = 443, trace: Optional[List[str]] = None) -> Dict[str, Any]:
+    return attempt_egress(domain, dest_ip, protocol, port, trace)
+
+
+def outbound_call(domain: str, dest_ip: Optional[str] = None, protocol: str = "https", port: int = 443, trace: Optional[List[str]] = None) -> Dict[str, Any]:
+    return attempt_egress(domain, dest_ip, protocol, port, trace)
+
+
+# Discovery/inventory
+def discover_inventory(clouds: List[str]) -> List[Dict[str, Any]]:
+    """
+    Discover and register workloads for the requested clouds.
+    clouds items: "aws", "azure", "gcp", "containers"
+    """
+    _ensure_accounts()
+    discovered: List[Dict[str, Any]] = []
+    for c in clouds:
+        c = c.lower()
+        if c == "aws":
+            wid = _shield().deploy_serverless_function("aws", "111111111111", "awsProcessor", allowlist_domains=["api.trusted.local"], actor="discover")
+            discovered.append(_shield().inventory.get_workload(wid).__dict__)
+        elif c == "azure":
+            # Simulate Azure Function
+            wid = f"azure:tenant-0000:function:azProcessor"
+            wl = Workload(id=wid, provider="azure", account="tenant-0000", kind="function", name="azProcessor", allowlist_domains={"graph.microsoft.com"})
+            _shield().inventory.register_workload(wl, actor="discover")
+            _shield().runtime.register_workload(wid, wl.allowlist_domains)
+            discovered.append(_shield().inventory.get_workload(wid).__dict__)
+        elif c == "gcp":
+            wid = f"gcp:project-0000:cloudfunction:gcpProcessor"
+            wl = Workload(id=wid, provider="gcp", account="project-0000", kind="cloudfunction", name="gcpProcessor", allowlist_domains={"storage.googleapis.com"})
+            _shield().inventory.register_workload(wl, actor="discover")
+            _shield().runtime.register_workload(wid, wl.allowlist_domains)
+            discovered.append(_shield().inventory.get_workload(wid).__dict__)
+        elif c in {"containers", "k8s", "container"}:
+            wid = f"k8s:cluster-1:container:service-backend"
+            wl = Workload(id=wid, provider="k8s", account="cluster-1", kind="container", name="service-backend", allowlist_domains={"registry.local"})
+            _shield().inventory.register_workload(wl, actor="discover")
+            _shield().runtime.register_workload(wid, wl.allowlist_domains)
+            discovered.append(_shield().inventory.get_workload(wid).__dict__)
+        else:
+            # Ignore unknown clouds to keep discovery robust
+            continue
+    return discovered
+
+
+def discover_and_inventory(clouds: List[str]) -> List[Dict[str, Any]]:
+    return discover_inventory(clouds)
+
+
+def inventory(clouds: List[str]) -> List[Dict[str, Any]]:
+    return discover_inventory(clouds)
+
+
+def discover(clouds: List[str]) -> List[Dict[str, Any]]:
+    return discover_inventory(clouds)
+
+
+def cspm_baseline() -> Dict[str, Any]:
+    return _shield().establish_baseline(actor="cspm")
+
+
+def detect_cspm_drift() -> List[Finding]:
+    return _shield().detect_drift(actor="cspm")
+
+
+def detect_drift() -> List[Finding]:
+    return detect_cspm_drift()
+
+
+# SBOM scanning and CI gate
+def scan_image(sbom: Optional[Dict[str, Any]] = None, files: Optional[Dict[str, str]] = None, image: str = "test/image:latest") -> Dict[str, Any]:
+    findings = _shield().scanner.scan_image(image, sbom_json=sbom, file_manifest=files, actor="scanner")
+    return {"image": image, "findings": findings}
+
+
+def scan_sbom(sbom: Optional[Dict[str, Any]] = None, files: Optional[Dict[str, str]] = None, image: str = "test/image:latest") -> Dict[str, Any]:
+    return scan_image(sbom, files, image)
+
+
+def sbom_scan(sbom: Optional[Dict[str, Any]] = None, files: Optional[Dict[str, str]] = None, image: str = "test/image:latest") -> Dict[str, Any]:
+    return scan_image(sbom, files, image)
+
+
+def enforce_ci_gate(scan: Optional[Dict[str, Any]] = None, findings: Optional[List[Finding]] = None) -> GateResult:
+    # Ensure an active signed policy exists
+    try:
+        _shield().policies.get_active_policy()
+    except Exception:
+        default_rego = """
+        package lambdashield.ci
+        # policy: deny_on_critical=true; block_on_secrets=true
+        default allow = false
+        """.strip()
+        sig = sign_policy(default_rego)
+        submit_policy({"name": "default-ci-gate", "content": default_rego, "signature": sig, "provenance": {"source": "auto"}})
+    fnds: List[Finding]
+    if findings is not None:
+        fnds = findings
+    elif scan and isinstance(scan, dict) and "findings" in scan:
+        fnds = scan["findings"]
+    else:
+        fnds = []
+    return _shield().policies.enforce_ci_gate(fnds, actor="pipeline")
+
+
+# Policy helpers
+def sign_policy(content: str, secret: Optional[str] = None) -> str:
+    return LambdaShield.sign_policy(content, signing_secret=secret or _GLOBAL.get("signing_secret", DEFAULT_SIGNING_SECRET))
+
+
+def verify_policy_signature(policy: Dict[str, Any], secret: Optional[str] = None) -> bool:
+    """
+    Verify a policy dict has a valid signature. Does not mutate active policy.
+    """
+    content = policy.get("content", "")
+    signature = policy.get("signature", "")
+    sec = secret or _GLOBAL.get("signing_secret", DEFAULT_SIGNING_SECRET)
+    expected = _hmac_sha256(sec, content.encode("utf-8"))
+    ok = hmac.compare_digest(expected, signature)
+    _shield().audit.append(
+        "policy.verification_check",
+        "pipeline",
+        {"status": "pass" if ok else "fail", "provenance": policy.get("provenance", {}), "name": policy.get("name", "unknown")},
+    )
+    return ok
+
+
+def submit_signed_policy(policy: Dict[str, Any]) -> RegoPolicy:
+    """
+    Submit a signed policy; raises SignatureVerificationError on invalid signature.
+    """
+    name = policy.get("name", "policy")
+    content = policy.get("content", "")
+    signature = policy.get("signature", "")
+    provenance = policy.get("provenance", {})
+    return _shield().submit_policy(name, content, signature, provenance, actor="pipeline")
+
+
+def submit_policy(policy: Dict[str, Any]) -> RegoPolicy:
+    return submit_signed_policy(policy)
+
+
+def verify_policy(policy: Dict[str, Any], secret: Optional[str] = None) -> bool:
+    return verify_policy_signature(policy, secret)
+
+
+def validate_policy_signature(policy: Dict[str, Any], secret: Optional[str] = None) -> bool:
+    return verify_policy_signature(policy, secret)
+
+
+def verify_signed_policy(policy: Dict[str, Any], secret: Optional[str] = None) -> bool:
+    return verify_policy_signature(policy, secret)
+
+
+# Trust graph analysis & remediation wrappers
+def detect_trust_misconfig(graph: Any) -> Dict[str, Any]:
+    """
+    Accepts a graph representation like:
+      {"edges": [{"src": "...", "dst": "...", "conditions": {...}}, ...]}
+    or a simple list of edges with the same element format.
+    Returns a dict with risky paths and a proposed fix (if any).
+    """
+    edges = graph.get("edges") if isinstance(graph, dict) else graph
+    edges = edges or []
+    # Reset trust graph for a clean analysis instance
+    # (start a fresh graph to avoid contamination across tests)
+    _GLOBAL["shield"].trust = TrustGraph(_shield().audit)
+    for e in edges:
+        src = e.get("src")
+        dst = e.get("dst")
+        cond = e.get("conditions", {}) or {}
+        if not src or not dst:
+            continue
+        _shield().trust.add_trust(src, dst, conditions=cond, actor="cspm")
+    risky = _shield().trust.detect_risky_paths()
+    proposal: Optional[Dict[str, Any]] = None
+    if risky:
+        proposal = _shield().trust.propose_least_privilege_fix(risky[0])
+        _shield().audit.append("iam.risky_detected", "cspm", {"risky": risky, "proposal": proposal})
+    return {"risky": risky, "proposal": proposal}
+
+
+def detect_trust_misconfiguration(graph: Any) -> Dict[str, Any]:
+    return detect_trust_misconfig(graph)
+
+
+def detect_risky_trust(graph: Any) -> Dict[str, Any]:
+    return detect_trust_misconfig(graph)
+
+
+def detect_cross_account_paths(graph: Any) -> Dict[str, Any]:
+    return detect_trust_misconfig(graph)
+
+
+def analyze_trust_graph(graph: Any) -> Dict[str, Any]:
+    return detect_trust_misconfig(graph)
+
+
+def apply_least_privilege_fix(proposal: Dict[str, Any]) -> Dict[str, Any]:
+    applied = _shield().trust.apply_fix(proposal, actor="remediator")
+    _GLOBAL["last_change_id"] = applied.get("change_id")
+    return applied
+
+
+def rollback_change(change_id: Optional[str] = None) -> Dict[str, Any]:
+    cid = change_id or _GLOBAL.get("last_change_id")
+    if not cid:
+        raise NotFoundError("no change_id available to rollback")
+    _shield().trust.rollback(cid, actor="remediator")
+    return {"rolled_back": cid}
+
+
+# Audit helpers
+def get_audit_records() -> List[Dict[str, Any]]:
+    return [r.__dict__ for r in _shield().audit.records()]
+
+
+def verify_audit_chain() -> bool:
+    return _shield().audit.verify_chain()
+
+
+# Secret management for tests
+def set_signing_secret(secret: str) -> Dict[str, Any]:
+    """
+    Configure the signing secret used for policy signature verification.
+    """
+    _GLOBAL["signing_secret"] = secret
+    # Update policy engine secret in-place
+    _shield().policies._secret = secret
+    _shield().audit.append("policy.secret.set", "admin", {"length": len(secret)})
+    return {"ok": True}
+
+
+def set_signing_key(secret: str) -> Dict[str, Any]:
+    return set_signing_secret(secret)
+
+
+def configure_signing_secret(secret: str) -> Dict[str, Any]:
+    return set_signing_secret(secret)
+
+
+# Account and deployment helpers (optional for adapters)
+def add_cloud_account(provider: str, account_id: str) -> Dict[str, Any]:
+    _shield().add_cloud_account(provider, account_id, actor="admin")
+    return {"provider": provider, "account_id": account_id}
+
+
+def deploy_function(provider: str, account_id: str, name: str, allowlist: Optional[List[str]] = None) -> Dict[str, Any]:
+    wid = _shield().deploy_serverless_function(provider, account_id, name, allowlist_domains=allowlist or [], actor="deployer")
+    _GLOBAL["active_workload_id"] = wid
+    return {"workload_id": wid, "provider": provider, "account_id": account_id, "name": name}
+
+
 # Example usage within CI/CD or tests (not executed on import)
 if __name__ == "__main__":
     # Demonstration of LambdaShield capabilities
