@@ -1,0 +1,31 @@
+{
+  "entries": [
+    {
+      "leaf": "2f96b446103ae07f010d4329aaee14fbcc2dc99d18076d74d1d6754a39e95fe5",
+      "payload": {
+        "attestation": {
+          "predicateType": "https://slsa.dev/provenance/v1",
+          "subject": [
+            {
+              "digest": {
+                "sha256": "5837e726c9102f2e397e552c9736eefe304d8c7f92ed621b5dce0b0bab8ef326"
+              },
+              "name": "artifact"
+            }
+          ]
+        },
+        "certificate": {
+          "issuer": "fulcio",
+          "notAfter": "2025-08-24T18:17:16.700166+00:00",
+          "notBefore": "2025-08-23T18:16:16.700158+00:00",
+          "subject": "https://token.actions.githubusercontent.com/sub/12345"
+        }
+      },
+      "uuid": "1e95f323-319f-47a9-8e06-0537b2793b13"
+    }
+  ],
+  "history": [
+    "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  ],
+  "root": "2f96b446103ae07f010d4329aaee14fbcc2dc99d18076d74d1d6754a39e95fe5"
+}
