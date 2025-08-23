@@ -203,7 +203,7 @@ class MerkleTree:
         return root, tree
 
     @staticmethod
-    public_registry_aliases() -> List[str]:
+    def public_registry_aliases() -> List[str]:
         return ["https://registry.npmjs.org", "https://pypi.org/simple", "https://pypi.python.org", "https://registry.yarnpkg.com"]
 
     @staticmethod
