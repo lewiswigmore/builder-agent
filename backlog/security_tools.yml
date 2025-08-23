@@ -431,7 +431,7 @@ security_tools:
   - Submit a tampered OPA policy to the pipeline; signature verification fails and
     the pipeline halts with an immutable audit record and provenance details.
   ready: true
-  status: todo
+  status: needs_work
   area_allowlist:
   - tools/cloud_security/lambdashield.py
   - tests/test_cld_001.py
