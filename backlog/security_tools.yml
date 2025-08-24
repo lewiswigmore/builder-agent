@@ -470,7 +470,7 @@ security_tools:
   - Attempt to remove entries from the transparency log mirror; tamper-evident verification
     fails and an alert is raised containing Merkle proof inconsistencies.
   ready: true
-  status: todo
+  status: needs_work
   area_allowlist:
   - tools/supply_chain/sigchain_guardian.py
   - tests/test_sc_001.py
