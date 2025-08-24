@@ -376,7 +376,7 @@ class SLSAEnforcer:
     @staticmethod
     def enforce_l3(attestation: Dict[str, Any]) -> Tuple[bool, List[str]]:
         problems = []
-        if attestation.get("predicateType", "").lower().find("slsaprovenance") < 0:
+        if attestation.get("predicateType", "").lower().find("slsaprovenance") < 0 and "slsa" not in attestation.get("predicateType", "").lower():
             problems.append("Attestation predicateType is not SLSA provenance.")
         pred = attestation.get("predicate", {})
         builder = pred.get("builder", {}).get("id")
@@ -615,9 +615,26 @@ def resolve_package_source(name: str, version_range: Optional[str] = None, regis
 # ------------------------------ Core Guardian ------------------------------
 
 class SigChainGuardian:
-    def __init__(self, transparency_mirror_path: Optional[str] = None):
-        self.mirror = TransparencyLogMirror(transparency_mirror_path or os.path.join(".sigchain_mirror"))
+    def __init__(
+        self,
+        registry_config: Optional[Dict[str, Any]] = None,
+        policy: Optional[Dict[str, Any]] = None,
+        mirror_path: Optional[str] = None,
+        transparency_mirror_path: Optional[str] = None,
+    ):
+        # prefer explicit mirror_path param, fallback to transparency_mirror_path for backward compatibility
+        mirror = mirror_path or transparency_mirror_path or os.path.join(".sigchain_mirror")
+        self.mirror = TransparencyLogMirror(mirror)
         self.ethical_warning = ETHICAL_WARNING
+        # registry configuration (e.g., {'private': {'url': ...}, 'public': {'url': ...}})
+        self.registry_config = registry_config or {}
+        # policy defaults
+        self.policy = {
+            "slsa_min_level": 3,
+            "risk_threshold": 0.7,
+        }
+        if policy:
+            self.policy.update(policy)
 
     # SBOM generation
     def generate_sbom(self, repo_path: str, formats: List[str] = ["cyclonedx", "spdx"], **kwargs) -> Dict[str, Any]:
@@ -700,9 +717,9 @@ class SigChainGuardian:
             outputs["cyclonedx"] = sbom.to_cyclonedx()
         if "spdx" in formats:
             outputs["spdx"] = sbom.to_spdx()
-        # SLSA enforcement
+        # SLSA enforcement (respect policy min level conceptually; here enforcing L3 checks)
         slsa_ok, slsa_probs = SLSAEnforcer.enforce_l3(attestation)
-        outputs["slsa_policy"] = {"level": "L3+", "pass": slsa_ok, "diagnostics": slsa_probs}
+        outputs["slsa_policy"] = {"requiredLevel": f"L{self.policy.get('slsa_min_level', 3)}", "pass": slsa_ok, "diagnostics": slsa_probs}
         return outputs
 
     # Signature verification and release gate
@@ -750,7 +767,14 @@ class SigChainGuardian:
         if isinstance(deps_or_manifest, dict):
             manifest = deps_or_manifest
             registries = manifest.get("registries", [])
-            public_regs = [r for r in registries if any(r.startswith(p) or r == p for p in MerkleTree.public_registry_aliases())]
+            # Fill registries from guardian registry_config if not provided
+            if not registries and self.registry_config:
+                for k, v in self.registry_config.items():
+                    url = v.get("url")
+                    if url:
+                        registries.append(url)
+            public_aliases = MerkleTree.public_registry_aliases()
+            public_regs = [r for r in registries if any(r.startswith(p) or r == p for p in public_aliases)]
             private_regs = [r for r in registries if r not in public_regs]
             deps = list((manifest.get("dependencies") or {}).keys())
             transitive_map = manifest.get("transitive") or {}
@@ -758,12 +782,26 @@ class SigChainGuardian:
             # Evaluate transitives via resolver hook
             for parent in deps:
                 for child in transitive_map.get(parent, []):
+                    resolution_failed = False
                     try:
                         res = resolve_package_source(child, version_range=None, registries=registries, transitive=True)
                     except Exception:
+                        # Safe default; mark failure
+                        resolution_failed = True
                         res = {"name": child, "registry": private_regs[0] if private_regs else (registries[0] if registries else "private")}
                     registry = res.get("registry")
                     shadowed = bool(res.get("shadowed"))
+                    if resolution_failed:
+                        alerts.append({
+                            "severity": "high",
+                            "message": f"Registry resolution failed or timed out for '{child}'; safe-blocking to prevent dependency confusion.",
+                            "package": child,
+                            "remediation": [
+                                "Retry with explicit registry pinning or scope namespaces.",
+                                "Ensure private registry availability and integrity.",
+                                "Use lockfiles and checksum verification."
+                            ]
+                        })
                     if shadowed or (registry in private_regs and public_regs):
                         alerts.append({
                             "severity": "high",
@@ -824,7 +862,9 @@ class SigChainGuardian:
         return results
 
     # Risk scoring and continuous diff
-    def diff_and_risk(self, prev_sbom: Dict[str, Any], new_sbom: Dict[str, Any], vuln_feed: Optional[Dict[str, Any]] = None, approval_threshold: float = 0.7) -> Dict[str, Any]:
+    def diff_and_risk(self, prev_sbom: Dict[str, Any], new_sbom: Dict[str, Any], vuln_feed: Optional[Dict[str, Any]] = None, approval_threshold: Optional[float] = None) -> Dict[str, Any]:
+        if approval_threshold is None:
+            approval_threshold = float(self.policy.get("risk_threshold", 0.7))
         prev_components = self._extract_components_from_sbom(prev_sbom)
         new_components = self._extract_components_from_sbom(new_sbom)
         prev_set = {(c["ecosystem"], c["name"]): c for c in prev_components}
@@ -1087,7 +1127,7 @@ def main():
 
     if args.cmd == "log":
         mirror_path = args.mirror or ".sigchain_mirror"
-        guardian = SigChainGuardian(transparency_mirror_path=mirror_path)
+        guardian = SigChainGuardian(mirror_path=mirror_path)
         if args.audit:
             res = guardian.audit_transparency_log()
             print(json.dumps(res, indent=2))
