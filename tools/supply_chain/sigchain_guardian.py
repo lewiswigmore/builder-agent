@@ -297,15 +297,19 @@ class TransparencyLogMirror:
         computed_root, tree = MerkleTree.build(leaves)
         issues = []
         ok = True
-        if computed_root != self.db["root"]:
+        stored_root = self.db["root"]
+        if computed_root != stored_root:
             ok = False
             issues.append("Current Merkle root mismatch; possible tampering or data corruption.")
-        # Verify that all recorded inclusion proofs for entries still validate
+        # Verify that all recorded inclusion proofs for entries validate against both computed and stored root
         for i, e in enumerate(self.db["entries"]):
             proof = MerkleTree.proof_for_index(tree, i)
             if not MerkleTree.verify_proof(e["leaf"], proof, computed_root):
                 ok = False
                 issues.append(f"Inclusion proof invalid for entry {e['uuid']}; Merkle proof inconsistency.")
+            if not MerkleTree.verify_proof(e["leaf"], proof, stored_root):
+                ok = False
+                issues.append(f"Merkle proof inconsistency for entry {e['uuid']}; does not validate against stored root.")
         # Detect removal attempt: if history contains roots that cannot be derived from subsets
         if len(self.db["entries"]) < len(self.db["history"]):
             ok = False
