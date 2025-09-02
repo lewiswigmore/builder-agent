@@ -6,7 +6,6 @@ import io
 import json
 import os
 import random
-import resource
 import secrets
 import socket
 import sys
@@ -25,11 +24,16 @@ try:
 except Exception as e:
     raise RuntimeError("PyTorch is required for Adversarial Canary.") from e
 
+# Platform-specific import for resource module
+IS_WINDOWS = sys.platform.startswith('win')
+if not IS_WINDOWS:
+    import resource
 
 ETHICAL_WARNING = (
     "WARNING: Adversarial Canary is for authorized testing, red teaming, and research only. "
     "Use strictly on models and data you own or are permitted to test. Misuse may be illegal and unethical."
 )
+
 
 
 def set_seed(seed: int) -> None:
@@ -105,16 +109,17 @@ class Sandbox:
         self._net = NetworkGuard(self.allowlist)
 
     def __enter__(self):
-        # Resource limits (best effort)
-        try:
-            resource.setrlimit(resource.RLIMIT_CPU, (self.cpu_seconds, self.cpu_seconds))
-        except Exception:
-            pass
-        try:
-            bytes_limit = self.mem_mb * 1024 * 1024
-            resource.setrlimit(resource.RLIMIT_AS, (bytes_limit, bytes_limit))
-        except Exception:
-            pass
+        # Resource limits (best effort, not available on Windows)
+        if not IS_WINDOWS:
+            try:
+                resource.setrlimit(resource.RLIMIT_CPU, (self.cpu_seconds, self.cpu_seconds))
+            except Exception:
+                pass
+            try:
+                bytes_limit = self.mem_mb * 1024 * 1024
+                resource.setrlimit(resource.RLIMIT_AS, (bytes_limit, bytes_limit))
+            except Exception:
+                pass
         return self._net.__enter__()
 
     def __exit__(self, exc_type, exc, tb):
