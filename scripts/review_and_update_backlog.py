@@ -117,7 +117,7 @@ def main():
             print(f"Tests PASSED for {tool_id_yaml}.")
             run_command("git checkout main")
             run_command("git pull origin main")
-            run_command(f"git merge --no-ff {local_branch_name} -m 'Merge feature branch {local_branch_name}'")
+            run_command(f"git merge --no-ff {local_branch_name} -m \"Merge feature branch {local_branch_name}\"")
             
             if update_backlog_status(tool_id_yaml, 'completed'):
                 run_command("git add backlog/security_tools.yml")
