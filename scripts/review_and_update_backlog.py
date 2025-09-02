@@ -31,7 +31,8 @@ def get_remote_branches():
     """Fetches all remote branches and returns a list of security tool branches."""
     print("Fetching all remote branches...")
     run_command("git fetch --all --prune")
-    output = run_command("git branch -r")
+    result = run_command("git branch -r")
+    output = result.stdout.strip()
     if not output:
         return []
     # Return full remote branch names like 'origin/security-tool/recon-001'
