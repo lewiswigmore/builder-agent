@@ -495,6 +495,20 @@ class MemoryAnalyzer:
                                 tmp.flush()
                                 hidden = self._hidden_with_volatility(Path(tmp.name))
                                 analysis["hidden_processes"] = hidden
+                                # Add malfind injections if available
+                                try:
+                                    mal = self.vol.malfind(str(Path(tmp.name)))
+                                    mrows = self._extract_vol_data(mal)
+                                    for d in mrows:
+                                        pid = d.get("Pid") or d.get("pid")
+                                        name = d.get("Process") or d.get("process") or d.get("Name") or d.get("name")
+                                        try:
+                                            ipid = int(pid) if pid is not None else None
+                                        except Exception:
+                                            ipid = None
+                                        analysis["injections"].append({"pid": ipid, "name": name, "reason": "malfind"})
+                                except Exception:
+                                    pass
                                 os.unlink(tmp.name)
                 else:
                     # Generic ZIP (maybe with psscan/pslist)
@@ -524,6 +538,16 @@ class MemoryAnalyzer:
                     analysis["raw"]["malfind"] = mal
                     # Flatten some info when structured data is present
                     analysis["hidden_processes"] = self._compute_hidden_from_vol(pslist, psscan)
+                    # Add malfind-derived injections
+                    mrows = self._extract_vol_data(mal)
+                    for d in mrows:
+                        pid = d.get("Pid") or d.get("pid")
+                        name = d.get("Process") or d.get("process") or d.get("Name") or d.get("name")
+                        try:
+                            ipid = int(pid) if pid is not None else None
+                        except Exception:
+                            ipid = None
+                        analysis["injections"].append({"pid": ipid, "name": name, "reason": "malfind"})
                 except Exception as e:
                     analysis["raw"]["error"] = str(e)
             else:
@@ -582,7 +606,7 @@ class MemoryAnalyzer:
             return []
 
     def _extract_vol_data(self, obj: Dict) -> List[Dict]:
-        data = obj.get("data")
+        data = obj.get("data") if isinstance(obj, dict) else None
         if isinstance(data, list):
             return data
         if isinstance(data, dict) and "rows" in data:
@@ -668,16 +692,16 @@ class MemoryCarver:
                 preferred = [n for n in zf.namelist() if n.lower().endswith((".raw", ".bin", ".dmp")) or n.lower() in ("memory.raw", "memory.bin", "dump.raw")]
                 if preferred:
                     for name in preferred:
-                        with zf.open(name, "r") as f:
+                        with zf.open(name, "r") as f, _BufferedReader(f) as br:
                             tag = Path(name).name + "_"
                             # For zip entry, size known
                             total = zf.getinfo(name).file_size
-                            carve_stream(_BufferedReader(f), total, tag_prefix=tag)
+                            carve_stream(br, total, tag_prefix=tag)
                 else:
                     # Carve across all files, treating each as a stream
                     for name in zf.namelist():
-                        with zf.open(name, "r") as f:
-                            carve_stream(_BufferedReader(f), None, tag_prefix=Path(name).name + "_")
+                        with zf.open(name, "r") as f, _BufferedReader(f) as br:
+                            carve_stream(br, None, tag_prefix=Path(name).name + "_")
         else:
             with open(p, "rb") as f:
                 # Get size
@@ -808,7 +832,7 @@ class ReportBuilder:
                     lines.append(f"  {hp}")
         if analysis.get("injections"):
             lines.append("")
-            lines.append("Suspicious Processes (Heuristics):")
+            lines.append("Suspicious Processes (Heuristics/Malfind):")
             for sp in analysis["injections"][:50]:
                 lines.append(f"  PID={sp.get('pid')} Name={sp.get('name')} Reason={sp.get('reason')}")
         lines.append("")
@@ -864,7 +888,7 @@ class ReportBuilder:
             html.append("</table>")
 
         if inj:
-            html.append("<h2>Suspicious Processes (Heuristics)</h2>")
+            html.append("<h2>Suspicious Processes (Heuristics/Malfind)</h2>")
             html.append("<table><tr><th>PID</th><th>Name</th><th>Reason</th></tr>")
             for sp in inj[:200]:
                 html.append(f"<tr><td>{_html_escape(str(sp.get('pid')))}</td><td>{_html_escape(str(sp.get('name')))}</td><td>{_html_escape(str(sp.get('reason')))}</td></tr>")
