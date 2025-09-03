@@ -15,7 +15,7 @@ security_tools:
   - Extract a malicious script from a memory image.
   - Generate a detailed report of all findings.
   ready: true
-  status: needs_implementation
+  status: todo
   area_allowlist:
   - tools/forensics/memory_toolkit.py
   - tests/test_forensics_001.py
@@ -36,7 +36,7 @@ security_tools:
   - Identify insecure network communication during dynamic analysis.
   - Generate a SARIF report of the findings.
   ready: true
-  status: needs_implementation
+  status: todo
   area_allowlist:
   - tools/mobile/app_analyzer.py
   - tests/test_mobile_001.py
@@ -57,7 +57,7 @@ security_tools:
   - Identify a vulnerable library in a firmware binary.
   - Emulate the firmware and detect a backdoor service.
   ready: true
-  status: needs_implementation
+  status: todo
   area_allowlist:
   - tools/iot/firmware_analyzer.py
   - tests/test_iot_002.py
@@ -102,7 +102,7 @@ security_tools:
   - Output unique, valid subdomains only
   - Handle timeouts gracefully
   ready: true
-  status: needs_implementation
+  status: todo
   area_allowlist:
   - tools/recon/subdomain_hunter.py
   - tools/recon/wordlists/
@@ -124,7 +124,7 @@ security_tools:
   - Show progress during cracking attempts
   - Handle invalid hash formats gracefully
   ready: true
-  status: needs_implementation
+  status: todo
   area_allowlist:
   - tools/vuln/hash_cracker.py
   - tools/vuln/wordlists/
@@ -211,7 +211,7 @@ security_tools:
   - Verify file integrity after encryption/decryption
   - Handle password-based encryption
   ready: true
-  status: needs_implementation
+  status: todo
   area_allowlist:
   - tools/crypto/encryption_suite.py
   - tests/test_crypto_001.py
