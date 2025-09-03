@@ -17,7 +17,7 @@ security_tools:
   - Extract a malicious script from a memory image.
   - Generate a detailed report of all findings.
   ready: true
-  status: in_progress
+  status: needs_work
   area_allowlist:
   - tools/forensics/memory_toolkit.py
   - tests/test_forensics_001.py
