@@ -1,4 +1,67 @@
 security_tools:
+- id: FORENSICS-001
+  title: Live Memory Forensic Toolkit
+  category: forensics
+  description: A toolkit for acquiring and analyzing volatile memory from live systems to uncover evidence of advanced threats, malware, and system compromise.
+  security_requirements:
+  - Acquire memory images from Windows, Linux, and macOS systems with minimal footprint.
+  - Analyze memory for running processes, network connections, loaded drivers, and code injection.
+  - Carve files, registry hives, and other artifacts directly from memory dumps.
+  - Detect stealthy malware techniques like rootkits and process hollowing.
+  - Generate comprehensive reports in multiple formats (JSON, HTML, PDF).
+  acceptance_tests:
+  - Successfully acquire a memory image from a test VM.
+  - Identify a hidden process in a sample memory dump.
+  - Extract a malicious script from a memory image.
+  - Generate a detailed report of all findings.
+  ready: true
+  status: ready_for_review
+  area_allowlist:
+  - tools/forensics/memory_toolkit.py
+  - tests/test_forensics_001.py
+  max_changed_lines: 800
+- id: MOBILE-001
+  title: Mobile App Security Analyzer
+  category: mobile
+  description: An automated security analyzer for Android and iOS applications that performs static and dynamic analysis to identify vulnerabilities.
+  security_requirements:
+  - Decompile and analyze application binaries (APK, IPA).
+  - Identify insecure data storage, weak cryptography, and improper authentication.
+  - Perform dynamic analysis in an emulated environment to detect runtime vulnerabilities.
+  - Scan for known vulnerabilities in third-party libraries.
+  - Provide detailed vulnerability reports with remediation advice.
+  acceptance_tests:
+  - Analyze a sample vulnerable Android application and identify at least three critical vulnerabilities.
+  - Detect hardcoded API keys in a test iOS application.
+  - Identify insecure network communication during dynamic analysis.
+  - Generate a SARIF report of the findings.
+  ready: true
+  status: ready_for_review
+  area_allowlist:
+  - tools/mobile/app_analyzer.py
+  - tests/test_mobile_001.py
+  max_changed_lines: 900
+- id: IOT-002
+  title: IoT Device Firmware Analyzer
+  category: iot
+  description: A tool to unpack, analyze, and identify vulnerabilities in IoT device firmware images.
+  security_requirements:
+  - Extract filesystems from various firmware formats (bin, img, etc.).
+  - Identify hardcoded credentials, private keys, and other secrets.
+  - Analyze binaries for known vulnerabilities and insecure functions.
+  - Emulate firmware to observe runtime behavior in a sandboxed environment.
+  - Generate a comprehensive report of security risks.
+  acceptance_tests:
+  - Successfully unpack a sample firmware image.
+  - Discover a hardcoded password within the firmware filesystem.
+  - Identify a vulnerable library in a firmware binary.
+  - Emulate the firmware and detect a backdoor service.
+  ready: true
+  status: ready_for_review
+  area_allowlist:
+  - tools/iot/firmware_analyzer.py
+  - tests/test_iot_002.py
+  max_changed_lines: 750
 - id: RECON-001
   title: Advanced Port Scanner
   category: reconnaissance
@@ -21,7 +84,7 @@ security_tools:
   - tools/recon/port_scanner.py
   - tools/recon/__init__.py
   - tests/test_recon_001.py
-  max_changed_lines: 500
+  max_changed_lines: 800
 - id: RECON-002
   title: Subdomain Hunter
   category: reconnaissance
@@ -44,7 +107,7 @@ security_tools:
   - tools/recon/subdomain_hunter.py
   - tools/recon/wordlists/
   - tests/test_recon_002.py
-  max_changed_lines: 500
+  max_changed_lines: 800
 - id: VULN-001
   title: Hash Cracker Suite
   category: vulnerability
@@ -66,7 +129,7 @@ security_tools:
   - tools/vuln/hash_cracker.py
   - tools/vuln/wordlists/
   - tests/test_vuln_001.py
-  max_changed_lines: 600
+  max_changed_lines: 900
 - id: VULN-002
   title: SSL/TLS Certificate Inspector
   category: vulnerability
@@ -88,7 +151,7 @@ security_tools:
   area_allowlist:
   - tools/vuln/cert_inspector.py
   - tests/test_vuln_002.py
-  max_changed_lines: 450
+  max_changed_lines: 750
 - id: HUNT-001
   title: Security Log Analyzer
   category: threat_hunting
@@ -110,7 +173,7 @@ security_tools:
   - tools/threat_hunt/log_analyzer.py
   - tools/threat_hunt/signatures/
   - tests/test_hunt_001.py
-  max_changed_lines: 700
+  max_changed_lines: 1000
 - id: NET-001
   title: Network Traffic Analyzer
   category: network
@@ -131,7 +194,7 @@ security_tools:
   area_allowlist:
   - tools/network/traffic_analyzer.py
   - tests/test_net_001.py
-  max_changed_lines: 550
+  max_changed_lines: 850
 - id: CRYPTO-001
   title: Encryption Utility Suite
   category: cryptography
@@ -152,7 +215,7 @@ security_tools:
   area_allowlist:
   - tools/crypto/encryption_suite.py
   - tests/test_crypto_001.py
-  max_changed_lines: 500
+  max_changed_lines: 800
 - id: AISEC-001
   title: AI Model Supply Chain Auditor
   category: ai_security
@@ -177,7 +240,7 @@ security_tools:
   area_allowlist:
   - tools/ai_security/ai_model_supply_chain_auditor.py
   - tests/test_ai_security_aisec_001.py
-  max_changed_lines: 500
+  max_changed_lines: 800
 - id: CLOUD-001
   title: Cloud IAM Drift Hunter & Attack Path Mapper
   category: cloud
@@ -202,7 +265,7 @@ security_tools:
   area_allowlist:
   - tools/cloud/iam_attack_path_mapper.py
   - tests/test_cloud_cloud_001.py
-  max_changed_lines: 500
+  max_changed_lines: 800
 - id: IOT-001
   title: Firmware Behavior Sandbox & SBOM Analyzer
   category: iot
@@ -227,7 +290,7 @@ security_tools:
   area_allowlist:
   - tools/iot/firmware_behavior_sandbox.py
   - tests/test_iot_iot_001.py
-  max_changed_lines: 500
+  max_changed_lines: 800
 - id: AI-001
   title: Adversarial Canary
   category: ai_security
@@ -260,7 +323,7 @@ security_tools:
   area_allowlist:
   - tools/ai_security/adversarial_canary.py
   - tests/test_ai_001.py
-  max_changed_lines: 700
+  max_changed_lines: 1000
 - id: SC-002
   title: SBOM Sentinel
   category: supply_chain
@@ -291,7 +354,7 @@ security_tools:
   area_allowlist:
   - tools/supply_chain/sbom_sentinel.py
   - tests/test_sc_002.py
-  max_changed_lines: 700
+  max_changed_lines: 1000
 - id: IOT-003
   title: FuzzFox IoT
   category: iot_security
@@ -321,7 +384,7 @@ security_tools:
   area_allowlist:
   - tools/iot_security/fuzzfox.py
   - tests/test_iot_003.py
-  max_changed_lines: 700
+  max_changed_lines: 1000
 - id: CL-002
   title: 'NebulaGuard: Serverless & Container Runtime Policy Scanner'
   category: cloud_security
@@ -360,7 +423,7 @@ security_tools:
   area_allowlist:
   - tools/cloud_security/nebula_guard.py
   - tests/test_cloud_002.py
-  max_changed_lines: 700
+  max_changed_lines: 1000
 - id: SC-003
   title: 'Hermes-SBOM Sentinel: Provenance & Integrity Watcher'
   category: supply_chain
@@ -397,7 +460,7 @@ security_tools:
   area_allowlist:
   - tools/supply_chain/hermes_sentinel.py
   - tests/test_supply_chain_003.py
-  max_changed_lines: 700
+  max_changed_lines: 1000
 - id: CLD-001
   title: LambdaShield
   category: cloud_security
@@ -435,7 +498,7 @@ security_tools:
   area_allowlist:
   - tools/cloud_security/lambdashield.py
   - tests/test_cld_001.py
-  max_changed_lines: 700
+  max_changed_lines: 1000
 - id: SC-001
   title: SigChain Guardian
   category: supply_chain
@@ -474,4 +537,4 @@ security_tools:
   area_allowlist:
   - tools/supply_chain/sigchain_guardian.py
   - tests/test_sc_001.py
-  max_changed_lines: 700
+  max_changed_lines: 1000
