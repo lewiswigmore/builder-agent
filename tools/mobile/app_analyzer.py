@@ -305,7 +305,7 @@ class MobileAppSecurityAnalyzer:
         self.log(f"Collected {len(strings)} strings (preview {min(limit_preview, len(strings))})")
 
         if app_type == "apk":
-            self.analyze_android_manifest(extract_dir)
+            self.analyze_android_manifest(extract_dir, app_path)
         elif app_type == "ipa":
             self.analyze_ios_plist(extract_dir)
 
@@ -317,21 +317,32 @@ class MobileAppSecurityAnalyzer:
         self.detect_insecure_network_usage(strings)
         self.scan_third_party_vulnerabilities(app_type, extract_dir, extracted_files, strings)
 
-    def analyze_android_manifest(self, extract_dir: str) -> None:
+    def analyze_android_manifest(self, extract_dir: str, app_path: Optional[str] = None) -> None:
         manifest_path = os.path.join(extract_dir, "AndroidManifest.xml")
         data = read_file_bytes(manifest_path)
-        if not data:
-            # try use aapt if installed
-            code, out, _ = try_run_cmd(["aapt", "dump", "badging", manifest_path])
-            if code == 0:
-                data = out.encode()
-        if not data:
+        text = ""
+        if data:
+            try:
+                text = data.decode("utf-8", errors="ignore")
+            except Exception:
+                text = ""
+        if not text and app_path and os.path.exists(app_path):
+            # try use aapt if installed on full APK (not the extracted AXML)
+            code, out, _ = try_run_cmd(["aapt", "dump", "xmltree", app_path, "AndroidManifest.xml"], timeout=25)
+            if code == 0 and out:
+                text = out
+            else:
+                code2, out2, _ = try_run_cmd(["aapt", "dump", "badging", app_path], timeout=25)
+                if code2 == 0 and out2:
+                    text = out2
+
+        if not text:
             # cannot parse manifest; best-effort skip
-            self.log("AndroidManifest.xml not parsed")
+            self.log("AndroidManifest could not be parsed; skipping manifest checks.")
             return
-        text = data.decode("utf-8", errors="ignore")
-        # Naive matching for debug flag
-        if re.search(r'android:debuggable\s*=\s*"(true|1)"', text):
+
+        # Naive matching for flags in textual or aapt xmltree/badging output
+        if re.search(r'android:debuggable\s*=\s*"(true|1)"', text) or re.search(r'debuggable\(.*\)=\(true\)', text):
             self.add_finding(Finding(
                 "ANDROID_DEBUGGABLE",
                 "Application is debuggable",
@@ -339,7 +350,7 @@ class MobileAppSecurityAnalyzer:
                 "high",
                 "Disable android:debuggable in production builds."
             ))
-        if re.search(r'android:allowBackup\s*=\s*"(true|1)"', text):
+        if re.search(r'android:allowBackup\s*=\s*"(true|1)"', text) or re.search(r'allowBackup\(.*\)=\(true\)', text):
             self.add_finding(Finding(
                 "ANDROID_ALLOW_BACKUP",
                 "Backup is enabled",
@@ -347,7 +358,7 @@ class MobileAppSecurityAnalyzer:
                 "medium",
                 "Set android:allowBackup=\"false\" or carefully audit backup content."
             ))
-        if re.search(r'usesCleartextTraffic\s*=\s*"(true|1)"', text):
+        if re.search(r'usesCleartextTraffic\s*=\s*"(true|1)"', text) or re.search(r'usesCleartextTraffic\(.*\)=\(true\)', text):
             self.add_finding(Finding(
                 "ANDROID_CLEARTEXT_ALLOWED",
                 "Cleartext traffic is permitted",
@@ -689,7 +700,6 @@ class MobileAppSecurityAnalyzer:
         try:
             from scapy.all import rdpcap  # type: ignore
             packets = rdpcap(pcap_path)
-            buff = io.StringIO()
             for pkt in packets:
                 raw = bytes(pkt)
                 try:
@@ -859,7 +869,7 @@ class MobileAppSecurityAnalyzer:
 def write_output(report: Dict[str, Any], out_path: Optional[str], sarif_path: Optional[str]) -> None:
     pretty = json.dumps(report, indent=2)
     if out_path:
-        with open(out_path, "w", encoding="utf-8") as f:
+        with open(out_path, "w", encoding="utf-8")as f:
             f.write(pretty)
     else:
         print(pretty)
