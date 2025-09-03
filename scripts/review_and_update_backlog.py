@@ -72,12 +72,64 @@ def update_backlog_status(tool_id, status):
         print(f"Tool ID {tool_id} not found in backlog.")
         return False
 
+def get_tools_needing_implementation():
+    """Returns a list of tool IDs that have 'needs_implementation' status."""
+    backlog_file = 'backlog/security_tools.yml'
+    if not os.path.exists(backlog_file):
+        print(f"Backlog file not found: {backlog_file}")
+        return []
+    
+    with open(backlog_file, 'r') as f:
+        backlog = yaml.safe_load(f)
+    
+    tools_needing_impl = []
+    for tool in backlog.get('security_tools', []):
+        if tool.get('status') == 'needs_implementation' and tool.get('ready', False):
+            tools_needing_impl.append(tool['id'])
+    
+    return tools_needing_impl
+
+def create_branch_for_tool(tool_id):
+    """Creates a new branch for a tool that needs implementation."""
+    branch_name = f"security-tool/{tool_id.lower().replace('_', '-')}"
+    
+    print(f"Creating new branch for {tool_id}: {branch_name}")
+    
+    # Start from main
+    run_command("git checkout main")
+    run_command("git pull origin main")
+    
+    # Create new branch
+    run_command(f"git checkout -b {branch_name}")
+    
+    # Update status to 'in_progress' to track that a branch has been created
+    if update_backlog_status(tool_id, 'in_progress'):
+        run_command("git add backlog/security_tools.yml")
+        run_command(f"git commit -m \"Start implementation of {tool_id}\"")
+        
+        # Push the new branch
+        run_command(f"git push -u origin {branch_name}")
+        print(f"Created and pushed branch: {branch_name}")
+        return True
+    
+    return False
+
 def main():
     """Main function to orchestrate the review of all security tool branches."""
     # Start from a clean main branch
     run_command("git checkout main")
     run_command("git reset --hard origin/main")
     run_command("git pull origin main")
+
+    # First, create branches for tools that need implementation
+    tools_needing_impl = get_tools_needing_implementation()
+    if tools_needing_impl:
+        print(f"Found tools needing implementation: {', '.join(tools_needing_impl)}")
+        for tool_id in tools_needing_impl:
+            create_branch_for_tool(tool_id)
+        
+        # Return to main after creating branches
+        run_command("git checkout main")
 
     remote_branches = get_remote_branches()
     if not remote_branches:
