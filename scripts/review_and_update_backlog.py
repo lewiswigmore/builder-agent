@@ -4,11 +4,7 @@ import yaml
 
 def run_command(command, ignore_errors=False):
     """
-<<<<<<< HEAD
     Runs a shell command, prints its output, and returns the subprocess result object.
-=======
-    Runs a shell command, prints its output, and returns the output string.
->>>>>>> ai-001
     If ignore_errors is False, it will raise an exception on failure.
     """
     try:
@@ -23,32 +19,20 @@ def run_command(command, ignore_errors=False):
         output = result.stdout.strip()
         if output:
             print(output)
-<<<<<<< HEAD
         return result
-=======
-        return output
->>>>>>> ai-001
     except subprocess.CalledProcessError as e:
         stderr_output = e.stderr.strip()
         print(f"Error running command: {command}\n{stderr_output}")
         if not ignore_errors:
             raise
-<<<<<<< HEAD
         return e
-=======
-        return stderr_output
->>>>>>> ai-001
 
 def get_remote_branches():
     """Fetches all remote branches and returns a list of security tool branches."""
     print("Fetching all remote branches...")
     run_command("git fetch --all --prune")
-<<<<<<< HEAD
     result = run_command("git branch -r")
     output = result.stdout.strip()
-=======
-    output = run_command("git branch -r")
->>>>>>> ai-001
     if not output:
         return []
     # Return full remote branch names like 'origin/security-tool/recon-001'
@@ -123,22 +107,16 @@ def main():
             print(f"Test file not found: {test_file}. Skipping branch.")
             continue
 
-<<<<<<< HEAD
         test_result = run_command(f"pytest {test_file}", ignore_errors=True)
         
         # pytest exit codes: 0 = all tests passed, 1 = tests failed, 5 = no tests found
         # A run with only skipped tests also returns 0.
         tests_passed = test_result.returncode == 0
-=======
-        test_output = run_command(f"pytest {test_file}", ignore_errors=True)
-        tests_passed = "passed" in test_output and "failed" not in test_output and "error" not in test_output
->>>>>>> ai-001
 
         if tests_passed:
             print(f"Tests PASSED for {tool_id_yaml}.")
             run_command("git checkout main")
             run_command("git pull origin main")
-<<<<<<< HEAD
             run_command(f'git merge --no-ff {local_branch_name} -m "Merge feature branch {local_branch_name}"')
             
             if update_backlog_status(tool_id_yaml, 'completed'):
@@ -151,22 +129,11 @@ def main():
             # The remote branch name includes 'origin/', which we need to remove for the delete command
             remote_branch_ref = remote_branch.replace('origin/', '')
             run_command(f"git push origin --delete {remote_branch_ref}")
-=======
-            run_command(f"git merge --no-ff {local_branch_name} -m 'Merge feature branch {local_branch_name}'")
-            
-            if update_backlog_status(tool_id_yaml, 'completed'):
-                run_command("git add backlog/security_tools.yml")
-                run_command(f"git commit -m 'Update backlog for {tool_id_yaml} to completed'")
-            
-            run_command("git push origin main")
-            run_command(f"git push origin --delete {remote_branch.replace('origin/', '')}")
->>>>>>> ai-001
             print(f"Successfully merged and cleaned up branch {local_branch_name}.")
         else:
             print(f"Tests FAILED for {tool_id_yaml}.")
             if update_backlog_status(tool_id_yaml, 'needs_work'):
                 run_command("git add backlog/security_tools.yml")
-<<<<<<< HEAD
                 
                 # Check if there are changes to commit before attempting to commit
                 commit_check_result = run_command("git diff --staged --quiet", ignore_errors=True)
@@ -180,13 +147,6 @@ def main():
                         print(f"Failed to push status to branch {local_branch_name}. It may be out of sync.")
                 else:
                     print("No changes to commit for backlog status (it was already 'needs_work').")
-=======
-                # Correctly quote the commit message and ignore errors if no changes
-                run_command(f"git commit -m \"Auto-update backlog: {tool_id_yaml} needs work\"", ignore_errors=True)
-                # Push the changes to the feature branch
-                run_command(f"git push origin {local_branch_name}", ignore_errors=True)
-                print(f"Pushed 'needs_work' status to branch {local_branch_name}.")
->>>>>>> ai-001
 
     # Final cleanup
     run_command("git checkout main")
