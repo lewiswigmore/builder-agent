@@ -123,7 +123,7 @@ def main():
                 run_command("git add backlog/security_tools.yml")
                 # Check for changes before committing
                 if run_command("git diff --staged --quiet", ignore_errors=True).returncode != 0:
-                    run_command(f"git commit -m 'Update backlog for {tool_id_yaml} to completed'")
+                    run_command(f"git commit -m \"Update backlog for {tool_id_yaml} to completed\"")
             
             run_command("git push origin main")
             # The remote branch name includes 'origin/', which we need to remove for the delete command
