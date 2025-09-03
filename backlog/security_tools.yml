@@ -40,7 +40,7 @@ security_tools:
   - Identify insecure network communication during dynamic analysis.
   - Generate a SARIF report of the findings.
   ready: true
-  status: todo
+  status: needs_work
   area_allowlist:
   - tools/mobile/app_analyzer.py
   - tests/test_mobile_001.py
