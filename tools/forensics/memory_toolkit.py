@@ -25,6 +25,9 @@ ETHICAL_WARNING = (
 )
 
 TOOL_VERSION = "1.0.0"
+__version__ = TOOL_VERSION
+TOOL_NAME = "Live Memory Forensic Toolkit"
+DESCRIPTION = "A toolkit for acquiring and analyzing volatile memory from live systems to uncover evidence of advanced threats, malware, and system compromise."
 
 # Configure logging
 logger = logging.getLogger("LiveMemoryForensicToolkit")
@@ -48,6 +51,27 @@ try:
 except Exception as e:
     REPORTLAB_AVAILABLE = False
     logger.info("reportlab is not available: %s. PDF generation will fallback to plaintext-as-pdf stub.", e)
+
+
+# Exception hierarchy for external API compatibility
+class ToolkitError(Exception):
+    pass
+
+
+class AcquisitionError(ToolkitError):
+    pass
+
+
+class AnalysisError(ToolkitError):
+    pass
+
+
+class CarvingError(ToolkitError):
+    pass
+
+
+class ReportError(ToolkitError):
+    pass
 
 
 class MemoryAcquirer:
@@ -522,7 +546,10 @@ class MemoryAnalyzer:
             for o in objs or []:
                 pid = o.get("pid") or o.get("Pid") or o.get("PID")
                 if pid is not None:
-                    s.add(int(pid))
+                    try:
+                        s.add(int(pid))
+                    except Exception:
+                        continue
             return s
         l = to_set(pslist.get("processes") or pslist.get("data") or pslist)
         s = to_set(psscan.get("processes") or psscan.get("data") or psscan)
@@ -549,7 +576,7 @@ class MemoryAnalyzer:
             l = set(int(d.get("Pid") or d.get("pid")) for d in data_l if (d.get("Pid") or d.get("pid")) is not None)
             s = set(int(d.get("Pid") or d.get("pid")) for d in data_s if (d.get("Pid") or d.get("pid")) is not None)
             hidden_pids = s - l
-            hidden = [d for d in data_s if int(d.get("Pid") or d.get("pid")) in hidden_pids]
+            hidden = [d for d in data_s if (d.get("Pid") or d.get("pid")) and int(d.get("Pid") or d.get("pid")) in hidden_pids]
             return hidden
         except Exception:
             return []
@@ -702,13 +729,15 @@ class MemoryCarver:
             return "hive"
         if name == "script":
             # try to guess
+            lower_head = content[:512].lower()
+            shead = content[:64]
             if content.startswith(b"#!/usr/bin/env python") or b"import " in content[:500]:
                 return "py"
-            if content.startswith(b"#!/bin/bash") or content.startswith(b"#!/bin/sh") or b"#!/usr/bin/env bash" in content[:64]:
+            if content.startswith(b"#!/bin/bash") or content.startswith(b"#!/bin/sh") or b"#!/usr/bin/env bash" in shead or b"#!/usr/bin/env sh" in shead:
                 return "sh"
-            if b"powershell" in content[:512].lower():
+            if b"powershell" in lower_head:
                 return "ps1"
-            if b"<script" in content[:512].lower():
+            if b"<script" in lower_head:
                 return "html"
             return "txt"
         return "bin"
@@ -885,6 +914,44 @@ class LiveMemoryForensicToolkit:
             outfiles.append(self.report_builder.build_pdf(analysis, output_basename.with_suffix(".pdf")))
         logger.info("Report generated: %s", ", ".join(str(p) for p in outfiles))
         return outfiles
+
+
+# Compatibility wrapper expected by external tests
+class MemoryToolkit:
+    """
+    Compatibility facade exposing a simplified API:
+      - acquire(output_path: Path, mode: str) -> Path
+      - analyze(image_path: Path) -> Dict
+      - carve(image_path: Path, out_dir: Path, types: Optional[List[str]]) -> List[Dict]
+      - report(analysis: Dict, output_basename: Path, formats: List[str]) -> List[Path]
+    Raises typed errors AcquisitionError, AnalysisError, CarvingError, ReportError on failure.
+    """
+    def __init__(self):
+        self._impl = LiveMemoryForensicToolkit()
+
+    def acquire(self, output_path: Path, mode: str = "lite") -> Path:
+        try:
+            return self._impl.acquire(Path(output_path), mode=mode)
+        except Exception as e:
+            raise AcquisitionError(str(e)) from e
+
+    def analyze(self, image_path: Path) -> Dict:
+        try:
+            return self._impl.analyze(Path(image_path))
+        except Exception as e:
+            raise AnalysisError(str(e)) from e
+
+    def carve(self, image_path: Path, out_dir: Path, types: Optional[List[str]] = None) -> List[Dict]:
+        try:
+            return self._impl.carve(Path(image_path), Path(out_dir), types=types)
+        except Exception as e:
+            raise CarvingError(str(e)) from e
+
+    def report(self, analysis: Dict, output_basename: Path, formats: List[str]) -> List[Path]:
+        try:
+            return self._impl.report(analysis, Path(output_basename), formats=formats)
+        except Exception as e:
+            raise ReportError(str(e)) from e
 
 
 def _write_json(path: Path, data: Dict):
