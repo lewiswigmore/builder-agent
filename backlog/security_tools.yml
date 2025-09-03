@@ -2,10 +2,12 @@ security_tools:
 - id: FORENSICS-001
   title: Live Memory Forensic Toolkit
   category: forensics
-  description: A toolkit for acquiring and analyzing volatile memory from live systems to uncover evidence of advanced threats, malware, and system compromise.
+  description: A toolkit for acquiring and analyzing volatile memory from live systems
+    to uncover evidence of advanced threats, malware, and system compromise.
   security_requirements:
   - Acquire memory images from Windows, Linux, and macOS systems with minimal footprint.
-  - Analyze memory for running processes, network connections, loaded drivers, and code injection.
+  - Analyze memory for running processes, network connections, loaded drivers, and
+    code injection.
   - Carve files, registry hives, and other artifacts directly from memory dumps.
   - Detect stealthy malware techniques like rootkits and process hollowing.
   - Generate comprehensive reports in multiple formats (JSON, HTML, PDF).
@@ -15,7 +17,7 @@ security_tools:
   - Extract a malicious script from a memory image.
   - Generate a detailed report of all findings.
   ready: true
-  status: todo
+  status: in_progress
   area_allowlist:
   - tools/forensics/memory_toolkit.py
   - tests/test_forensics_001.py
@@ -23,7 +25,8 @@ security_tools:
 - id: MOBILE-001
   title: Mobile App Security Analyzer
   category: mobile
-  description: An automated security analyzer for Android and iOS applications that performs static and dynamic analysis to identify vulnerabilities.
+  description: An automated security analyzer for Android and iOS applications that
+    performs static and dynamic analysis to identify vulnerabilities.
   security_requirements:
   - Decompile and analyze application binaries (APK, IPA).
   - Identify insecure data storage, weak cryptography, and improper authentication.
@@ -31,7 +34,8 @@ security_tools:
   - Scan for known vulnerabilities in third-party libraries.
   - Provide detailed vulnerability reports with remediation advice.
   acceptance_tests:
-  - Analyze a sample vulnerable Android application and identify at least three critical vulnerabilities.
+  - Analyze a sample vulnerable Android application and identify at least three critical
+    vulnerabilities.
   - Detect hardcoded API keys in a test iOS application.
   - Identify insecure network communication during dynamic analysis.
   - Generate a SARIF report of the findings.
@@ -44,7 +48,8 @@ security_tools:
 - id: IOT-002
   title: IoT Device Firmware Analyzer
   category: iot
-  description: A tool to unpack, analyze, and identify vulnerabilities in IoT device firmware images.
+  description: A tool to unpack, analyze, and identify vulnerabilities in IoT device
+    firmware images.
   security_requirements:
   - Extract filesystems from various firmware formats (bin, img, etc.).
   - Identify hardcoded credentials, private keys, and other secrets.
