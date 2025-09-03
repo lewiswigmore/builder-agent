@@ -2,10 +2,12 @@ security_tools:
 - id: FORENSICS-001
   title: Live Memory Forensic Toolkit
   category: forensics
-  description: A toolkit for acquiring and analyzing volatile memory from live systems to uncover evidence of advanced threats, malware, and system compromise.
+  description: A toolkit for acquiring and analyzing volatile memory from live systems
+    to uncover evidence of advanced threats, malware, and system compromise.
   security_requirements:
   - Acquire memory images from Windows, Linux, and macOS systems with minimal footprint.
-  - Analyze memory for running processes, network connections, loaded drivers, and code injection.
+  - Analyze memory for running processes, network connections, loaded drivers, and
+    code injection.
   - Carve files, registry hives, and other artifacts directly from memory dumps.
   - Detect stealthy malware techniques like rootkits and process hollowing.
   - Generate comprehensive reports in multiple formats (JSON, HTML, PDF).
@@ -15,7 +17,7 @@ security_tools:
   - Extract a malicious script from a memory image.
   - Generate a detailed report of all findings.
   ready: true
-  status: todo
+  status: needs_work
   area_allowlist:
   - tools/forensics/memory_toolkit.py
   - tests/test_forensics_001.py
@@ -23,7 +25,8 @@ security_tools:
 - id: MOBILE-001
   title: Mobile App Security Analyzer
   category: mobile
-  description: An automated security analyzer for Android and iOS applications that performs static and dynamic analysis to identify vulnerabilities.
+  description: An automated security analyzer for Android and iOS applications that
+    performs static and dynamic analysis to identify vulnerabilities.
   security_requirements:
   - Decompile and analyze application binaries (APK, IPA).
   - Identify insecure data storage, weak cryptography, and improper authentication.
@@ -31,7 +34,8 @@ security_tools:
   - Scan for known vulnerabilities in third-party libraries.
   - Provide detailed vulnerability reports with remediation advice.
   acceptance_tests:
-  - Analyze a sample vulnerable Android application and identify at least three critical vulnerabilities.
+  - Analyze a sample vulnerable Android application and identify at least three critical
+    vulnerabilities.
   - Detect hardcoded API keys in a test iOS application.
   - Identify insecure network communication during dynamic analysis.
   - Generate a SARIF report of the findings.
@@ -44,7 +48,8 @@ security_tools:
 - id: IOT-002
   title: IoT Device Firmware Analyzer
   category: iot
-  description: A tool to unpack, analyze, and identify vulnerabilities in IoT device firmware images.
+  description: A tool to unpack, analyze, and identify vulnerabilities in IoT device
+    firmware images.
   security_requirements:
   - Extract filesystems from various firmware formats (bin, img, etc.).
   - Identify hardcoded credentials, private keys, and other secrets.
@@ -538,3 +543,80 @@ security_tools:
   - tools/supply_chain/sigchain_guardian.py
   - tests/test_sc_001.py
   max_changed_lines: 1000
+- id: AISEC-002
+  title: Dataset Lineage & Poison-Drift Tracer
+  category: ai_security
+  description: Tracks dataset/model provenance and detects poisoning/backdoors using
+    influence functions, spectral signatures, and drift analysis; issues signed attestations
+    and quarantines risky artifacts.
+  security_requirements:
+  - Execute analysis of untrusted datasets/models in isolated, no-outbound sandboxes
+    with strict filesystem confinement.
+  - Cryptographically sign and verify lineage/provenance attestations (in-toto/Sigstore)
+    and store append-only audit logs.
+  - Support opt-in privacy-preserving feature hashing/anonymization and configurable
+    PII redaction.
+  acceptance_tests:
+  - Given a model trained with an embedded backdoor trigger, the tool flags the poisoned
+    subset and raises a high-severity alert with a minimal reproducible trigger.
+  - When ingesting a dataset and attestations, the full lineage chain verifies; missing/invalid
+    signatures cause validation failure with a clear error.
+  - Evaluating a third-party model blocks outbound network and confines writes to
+    a temporary sandbox that is destroyed after completion.
+  ready: true
+  status: todo
+  area_allowlist:
+  - tools/ai_security/dlp_tracer.py
+  - tests/test_aisec_002.py
+  max_changed_lines: 500
+- id: CLOUD-002
+  title: HoneyCred Cloud Tripwire
+  category: cloud
+  description: Deploys and rotates scoped honeytokens across AWS/Azure/GCP, monitors
+    for any usage via cloud logs, auto-revokes credentials, quarantines implicated
+    workloads, and emits signed, forensically sound alerts with blast-radius analysis.
+  security_requirements:
+  - Honeytokens must be least-privileged and explicitly blocked from write/delete
+    operations on critical resources.
+  - Revocation and quarantine actions are idempotent, audited, and avoid destructive
+    changes to customer data.
+  - Detections and actions are time-synchronized, signed, and stored in tamper-evident
+    storage.
+  acceptance_tests:
+  - When a honeytoken invokes a cloud API, the tool detects the event within 60 seconds
+    and creates a signed alert including caller, source IP, and resource context.
+  - Attempted use of a honeytoken to modify or delete resources fails due to enforced
+    policies and is logged.
+  - Upon detection, corresponding credentials are revoked and affected instances are
+    tagged/quarantined per policy.
+  ready: true
+  status: todo
+  area_allowlist:
+  - tools/cloud/honeycred_tripwire.py
+  - tests/test_cloud_002.py
+  max_changed_lines: 500
+- id: HUNT-002
+  title: eBPF Syscall Graph Hunter
+  category: threat_hunting
+  description: Collects kernel telemetry via eBPF to build process/syscall graphs,
+    detects LOTL/zero-day behaviors using temporal pattern mining and signed models,
+    and provides guided response playbooks.
+  security_requirements:
+  - Runs with least-required kernel capabilities and disables packet injection/blocking
+    by default.
+  - Captured telemetry is rate-limited, optionally anonymized, and encrypted in transit
+    and at rest.
+  - Detection rules and ML models are versioned, signed, and verified before execution.
+  acceptance_tests:
+  - A suspicious process chain (e.g., Word -> PowerShell -> curl) is detected as a
+    LOTL pattern and raises a medium/high-severity alert.
+  - Unsigned or tampered detection models fail verification, are not loaded, and generate
+    a clear audit event.
+  - Under telemetry spikes, adaptive sampling engages and the system maintains operation
+    without packet loss or CPU starvation beyond configured thresholds.
+  ready: true
+  status: todo
+  area_allowlist:
+  - tools/threat_hunting/ebpf_graph_hunter.py
+  - tests/test_hunt_002.py
+  max_changed_lines: 500
