@@ -704,5 +704,120 @@ def main(argv: Optional[list] = None) -> int:
         return 1
 
 
+class HashCracker:
+    """
+    Hash Cracker Suite library interface.
+
+    Warning: Authorized testing only. Ensure you have explicit permission.
+    """
+    DEFAULT_WORDLIST = os.path.join(os.path.dirname(__file__), "wordlists", "rockyou.txt")
+
+    def __init__(self, progress_interval: float = 1.0, state_interval: float = 2.0, quiet: bool = True):
+        self.progress_interval = progress_interval
+        self.state_interval = state_interval
+        self.quiet = quiet
+
+    @staticmethod
+    def detect(hash_str: str) -> Optional[str]:
+        return detect_hash_algorithm(hash_str)
+
+    @staticmethod
+    def hash_candidate(candidate: str, algo: str, target_hash: str) -> bool:
+        return hash_candidate(candidate, algo, target_hash)
+
+    def crack_with_wordlist(
+        self,
+        hash_str: str,
+        algo: Optional[str] = None,
+        wordlist_path: Optional[str] = None,
+        resume: bool = False,
+        resume_file: Optional[str] = None,
+    ) -> Tuple[bool, Optional[str]]:
+        if not hash_str:
+            raise ValueError("hash_str is required.")
+        if not algo:
+            algo = detect_hash_algorithm(hash_str)
+            if not algo:
+                raise ValueError("Unable to detect hash algorithm from hash_str.")
+        if not wordlist_path:
+            # fallback to default sample if exists
+            if os.path.isfile(self.DEFAULT_WORDLIST):
+                wordlist_path = self.DEFAULT_WORDLIST
+            else:
+                raise ValueError("wordlist_path is required for wordlist cracking.")
+        resume_state = None
+        if resume and resume_file and os.path.isfile(resume_file):
+            try:
+                resume_state = ResumeState.from_file(resume_file)
+            except Exception:
+                resume_state = None
+        success, plain, _ = crack_wordlist(
+            target_hash=hash_str,
+            algo=algo,
+            wordlist_path=wordlist_path,
+            progress_interval=self.progress_interval,
+            resume_state=resume_state if resume else None,
+            resume_file=resume_file,
+            quiet=self.quiet,
+            state_interval=self.state_interval,
+        )
+        return success, plain
+
+    def crack_with_bruteforce(
+        self,
+        hash_str: str,
+        algo: Optional[str] = None,
+        charset: Optional[str] = None,
+        lower: bool = False,
+        upper: bool = False,
+        digits: bool = False,
+        symbols: bool = False,
+        min_length: int = 1,
+        max_length: int = 6,
+        resume: bool = False,
+        resume_file: Optional[str] = None,
+    ) -> Tuple[bool, Optional[str]]:
+        if not hash_str:
+            raise ValueError("hash_str is required.")
+        if not algo:
+            algo = detect_hash_algorithm(hash_str)
+            if not algo:
+                raise ValueError("Unable to detect hash algorithm from hash_str.")
+        # Build charset
+        ch = charset or ""
+        if lower:
+            ch += "abcdefghijklmnopqrstuvwxyz"
+        if upper:
+            ch += "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+        if digits:
+            ch += "0123456789"
+        if symbols:
+            ch += "!@#$%^&*()_-+=[]{}|\\:;\"'<>,.?/`~"
+        ch = sanitize_charset(ch)
+        if not ch:
+            raise ValueError("Empty charset. Provide charset or set flags lower/upper/digits/symbols.")
+        if min_length <= 0 or max_length <= 0 or min_length > max_length:
+            raise ValueError("Invalid length range. Ensure 0 < min_length <= max_length.")
+        resume_state = None
+        if resume and resume_file and os.path.isfile(resume_file):
+            try:
+                resume_state = ResumeState.from_file(resume_file)
+            except Exception:
+                resume_state = None
+        success, plain, _ = crack_bruteforce(
+            target_hash=hash_str,
+            algo=algo,
+            charset=ch,
+            min_length=min_length,
+            max_length=max_length,
+            progress_interval=self.progress_interval,
+            resume_state=resume_state if resume else None,
+            resume_file=resume_file,
+            quiet=self.quiet,
+            state_interval=self.state_interval,
+        )
+        return success, plain
+
+
 if __name__ == "__main__":
     sys.exit(main())
