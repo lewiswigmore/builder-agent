@@ -62,7 +62,7 @@ security_tools:
   - Identify a vulnerable library in a firmware binary.
   - Emulate the firmware and detect a backdoor service.
   ready: true
-  status: todo
+  status: in_progress
   area_allowlist:
   - tools/iot/firmware_analyzer.py
   - tests/test_iot_002.py
