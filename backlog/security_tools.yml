@@ -129,7 +129,7 @@ security_tools:
   - Show progress during cracking attempts
   - Handle invalid hash formats gracefully
   ready: true
-  status: todo
+  status: in_progress
   area_allowlist:
   - tools/vuln/hash_cracker.py
   - tools/vuln/wordlists/
