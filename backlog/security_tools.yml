@@ -216,7 +216,7 @@ security_tools:
   - Verify file integrity after encryption/decryption
   - Handle password-based encryption
   ready: true
-  status: todo
+  status: needs_work
   area_allowlist:
   - tools/crypto/encryption_suite.py
   - tests/test_crypto_001.py
