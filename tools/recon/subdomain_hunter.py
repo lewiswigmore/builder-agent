@@ -11,6 +11,7 @@ import socket
 import string
 import sys
 import time
+import threading
 from typing import Iterable, List, Optional, Set, Tuple, Dict
 from urllib.parse import quote_plus, urlparse
 from urllib.request import Request, urlopen
@@ -245,7 +246,7 @@ class SubdomainHunter:
             return set()
         candidates = [f"{w.strip().lower()}.{self.domain}" for w in words if w.strip()]
         results: Set[str] = set()
-        lock = concurrent.futures.thread.Lock()
+        lock = threading.Lock()
 
         def check(host: str):
             try:
