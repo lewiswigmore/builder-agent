@@ -33,7 +33,7 @@ import signal
 import sys
 import time
 from dataclasses import dataclass, asdict
-from typing import Optional, Tuple, Iterable, Dict, Any
+from typing import Optional, Tuple, Iterable
 
 
 SUPPORTED_ALGOS = ["md5", "sha1", "sha256", "sha512", "bcrypt"]
@@ -90,7 +90,6 @@ def hash_candidate(candidate: str, algo: str, target_hash: str) -> bool:
         except Exception:
             return False
     else:
-        h = None
         data = candidate.encode("utf-8", errors="ignore")
         if algo == "md5":
             h = hashlib.md5()
@@ -223,7 +222,7 @@ class ProgressTracker:
         if (now - self.last_print) >= self.interval:
             self.last_print = now
             if self.total is not None and self.total > 0:
-                percent = (self.attempts / self.total) * 100.0
+                percent = (self.attempts / self.total) * 100.0 if self.total else 0.0
                 eprint(f"{prefix}Progress: {self.attempts}/{self.total} ({percent:.2f}%) | {self.format_eta()}")
             else:
                 eprint(f"{prefix}Progress: {self.attempts} attempts | {self.format_eta()}")
@@ -353,14 +352,14 @@ def crack_wordlist(target_hash: str, algo: str, wordlist_path: str, progress_int
     last_state_save = time.time()
 
     found_plain = None
+    current_index = resume_state.wordlist.line_index if resume_state.wordlist else 0
     try:
-        start_line = resume_state.wordlist.line_index if resume_state.wordlist else 0
+        start_line = current_index
         with open(wordlist_path, "r", encoding="utf-8", errors="ignore") as f:
             # Skip lines up to start_line
             for _ in range(start_line):
                 if f.readline() == "":
                     break
-            current_index = start_line
             for line in f:
                 if interrupted:
                     break
@@ -395,7 +394,7 @@ def crack_wordlist(target_hash: str, algo: str, wordlist_path: str, progress_int
     # Final save
     if resume_file:
         if resume_state.wordlist:
-            resume_state.wordlist.line_index = (resume_state.wordlist.line_index if resume_state.wordlist.line_index else 0)
+            resume_state.wordlist.line_index = current_index
         resume_state.attempts = tracker.attempts
         resume_state.progress_total = total
         resume_state.save(resume_file)
@@ -525,6 +524,7 @@ def crack_bruteforce(target_hash: str, algo: str, charset: str, min_length: int,
     if resume_file:
         # save final
         if resume_state.bruteforce:
+            # keep last known position/current_length
             resume_state.bruteforce.current_length = resume_state.bruteforce.current_length
             resume_state.bruteforce.position = resume_state.bruteforce.position
         resume_state.attempts = tracker.attempts
