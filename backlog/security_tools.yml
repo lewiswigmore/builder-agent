@@ -107,7 +107,7 @@ security_tools:
   - Output unique, valid subdomains only
   - Handle timeouts gracefully
   ready: true
-  status: todo
+  status: needs_work
   area_allowlist:
   - tools/recon/subdomain_hunter.py
   - tools/recon/wordlists/
