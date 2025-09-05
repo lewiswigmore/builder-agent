@@ -564,7 +564,7 @@ security_tools:
   - Evaluating a third-party model blocks outbound network and confines writes to
     a temporary sandbox that is destroyed after completion.
   ready: true
-  status: todo
+  status: needs_work
   area_allowlist:
   - tools/ai_security/dlp_tracer.py
   - tests/test_aisec_002.py
