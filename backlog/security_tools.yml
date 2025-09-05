@@ -615,7 +615,7 @@ security_tools:
   - Under telemetry spikes, adaptive sampling engages and the system maintains operation
     without packet loss or CPU starvation beyond configured thresholds.
   ready: true
-  status: in_progress
+  status: needs_work
   area_allowlist:
   - tools/threat_hunting/ebpf_graph_hunter.py
   - tests/test_hunt_002.py
