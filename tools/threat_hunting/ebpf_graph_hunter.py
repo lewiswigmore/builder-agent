@@ -120,8 +120,8 @@ class EventMeter:
             self._count += n
             now = time.monotonic()
             elapsed = now - self._last
-            # update every 0.5s
-            if elapsed >= 0.5:
+            # update frequently to quickly engage adaptive sampling under spikes
+            if elapsed >= 0.1:
                 self.rate_per_sec = self._count / elapsed if elapsed > 0 else 0.0
                 self._count = 0
                 self._last = now
@@ -149,8 +149,6 @@ class AdaptiveSampler:
             else:
                 if rate_per_sec >= self.high:
                     self.active = True
-                    # Scale sampling inversely with rate
-                    # For rates much larger than high, approach min_rate
                     factor = max(rate_per_sec / max(self.high, 1), 1.0)
                     self.sample_rate = max(self.min_rate, 1.0 / factor)
 
@@ -227,10 +225,34 @@ class SimpleFernet:
         return bytes(b ^ self._xor_key[i % len(self._xor_key)] for i, b in enumerate(xored))
 
 
+def _cmp_versions(a: str, b: str) -> int:
+    """Compare dot-separated version strings. Return -1 if a<b, 0 if equal, 1 if a>b."""
+    def parts(x: str) -> List[int]:
+        out: List[int] = []
+        for p in x.split("."):
+            try:
+                out.append(int(p))
+            except Exception:
+                out.append(0)
+        return out
+    pa, pb = parts(a), parts(b)
+    # pad
+    n = max(len(pa), len(pb))
+    pa += [0] * (n - len(pa))
+    pb += [0] * (n - len(pb))
+    for xa, xb in zip(pa, pb):
+        if xa < xb:
+            return -1
+        if xa > xb:
+            return 1
+    return 0
+
+
 class SecureModelLoader:
-    def __init__(self, trusted_hmac_keys: List[str], audit_cb) -> None:
+    def __init__(self, trusted_hmac_keys: List[str], audit_cb, engine_version: str = ENGINE_VERSION) -> None:
         self.trusted_hmac_keys = [k.encode() for k in trusted_hmac_keys]
         self.audit_cb = audit_cb
+        self.engine_version = engine_version
 
     @staticmethod
     def canonical_json(data: Dict[str, Any]) -> bytes:
@@ -255,7 +277,14 @@ class SecureModelLoader:
             for key in self.trusted_hmac_keys:
                 expected = hmac.new(key, content_bytes, hashlib.sha256).hexdigest()
                 if hmac.compare_digest(expected, signature):
-                    # additional version checks can go here
+                    # engine version requirement
+                    eng_min = model_json.get("engine_min_version")
+                    if eng_min and _cmp_versions(self.engine_version, str(eng_min)) < 0:
+                        self.audit_cb(
+                            "MODEL_VERIFICATION_FAILED",
+                            {"reason": "engine_version_too_low", "required": eng_min, "engine": self.engine_version, "model_id": model_json.get("id")},
+                        )
+                        return None
                     return model_json
             self.audit_cb(
                 "MODEL_VERIFICATION_FAILED",
@@ -278,7 +307,29 @@ class RuleEngine:
 
     @staticmethod
     def norm_name(n: str) -> str:
-        return n.lower()
+        if not n:
+            return ""
+        s = n.strip().strip('"').strip("'").lower()
+        # basename and strip common extensions
+        s = os.path.basename(s)
+        for ext in (".exe", ".dll", ".bat", ".cmd", ".sh", ".ps1", ".py", ".bin"):
+            if s.endswith(ext):
+                s = s[: -len(ext)]
+                break
+        # normalize known aliases
+        aliases = {
+            "winword": "word",
+            "microsoft word": "word",
+            "word": "word",
+            "powershell": "powershell",
+            "powershell_ise": "powershell",
+            "pwsh": "powershell",
+            "curl": "curl",
+            "curl64": "curl",
+            "cmd": "cmd",
+            "command prompt": "cmd",
+        }
+        return aliases.get(s, s)
 
     def load_rules_from_model(self, model: Dict[str, Any]) -> None:
         rules = model.get("rules", [])
@@ -340,7 +391,6 @@ class ProcessGraph:
             if parent:
                 ancestors = parent.get("ancestors", [])[-(self.max_depth - 1):] + [parent.get("name", "")]
             else:
-                # unknown parent, we still create placeholder
                 pass
             info = {
                 "pid": ev.pid,
@@ -449,7 +499,6 @@ class GraphHunter:
         }
         # Sign content with default key for testing
         content = dict(model)
-        # placeholder signature field will be added after content canonicalization
         content_bytes = SecureModelLoader.canonical_json(content)
         sig = hmac.new(DEFAULT_MODEL_SIGNING_KEY.encode(), content_bytes, hashlib.sha256).hexdigest()
         model["signature"] = sig
@@ -478,7 +527,6 @@ class GraphHunter:
             except Exception as e:
                 self._audit("MODEL_LOAD_ERROR", {"path": p, "error": str(e)})
         if not loaded_any:
-            # retain existing rules (default) but note that none of provided were loaded
             pass
 
     def start(self) -> None:
@@ -556,7 +604,6 @@ class GraphHunter:
         elif ev.type == "fork":
             self.graph.update_fork(ev)
         else:
-            # ensure at least node exists
             pass
 
         if ev.type == "exec":
@@ -640,7 +687,6 @@ class GraphHunter:
         base_pid = random.randint(1000, 5000)
         ppid = 1
         pid = base_pid
-        # Clear any previous to avoid conflicts
         for i, name in enumerate(names):
             ev = ProcessEvent(
                 time=now + i * 0.01,
@@ -656,7 +702,7 @@ class GraphHunter:
             pid += 1
             if delay > 0:
                 time.sleep(delay)
-        if network_at_end:
+        if network_at_end and names:
             # emit network connect from last pid (pid-1)
             nev = ProcessEvent(
                 time=now + len(names) * 0.01 + 0.01,
