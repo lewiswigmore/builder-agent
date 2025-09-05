@@ -14,7 +14,6 @@ import base64
 import datetime as dt
 import hashlib
 import hmac
-import io
 import json
 import logging
 import os
@@ -40,9 +39,7 @@ SECRET_FILE = "secret.key"
 
 # Critical write actions to explicitly deny in AWS
 AWS_DENY_ACTIONS = [
-    # Broad write/delete/privileged patterns
     "*:Create*", "*:Put*", "*:Update*", "*:Delete*", "*:Modify*", "iam:*", "kms:ScheduleKeyDeletion",
-    # Explicitly sensitive examples
     "ec2:TerminateInstances", "ec2:StopInstances", "ec2:RebootInstances", "ec2:DeleteSecurityGroup",
     "s3:PutBucketPolicy", "s3:DeleteBucket", "s3:PutObject", "s3:DeleteObject",
     "rds:DeleteDBInstance", "lambda:DeleteFunction", "cloudtrail:StopLogging",
@@ -396,16 +393,13 @@ class AWSProvider(ProviderBase):
         try:
             if self.dry_run:
                 return events
-            # Lookup by username and access key id
             for token_id, meta in tokens.items():
-                # Skip revoked to avoid noise
                 if meta.get("revoked"):
                     continue
                 lookups = [
                     {"AttributeKey": "AccessKeyId", "AttributeValue": meta["access_key_id"]},
                     {"AttributeKey": "Username", "AttributeValue": meta["user_name"]},
                 ]
-                # CloudTrail LookupEvents supports one lookup attribute per call; query both
                 for la in lookups:
                     resp = self.cloudtrail.lookup_events(LookupAttributes=[la], StartTime=since)
                     for e in resp.get("Events", []):
@@ -420,7 +414,7 @@ class AWSProvider(ProviderBase):
                             "user_name": meta["user_name"],
                             "event_time": e.get("EventTime", utc_now()).astimezone(dt.timezone.utc).isoformat(),
                             "event_name": e.get("EventName"),
-                            "source_ip": e.get("Username") and detail.get("sourceIPAddress"),
+                            "source_ip": detail.get("sourceIPAddress") or e.get("SourceIPAddress"),
                             "caller": detail.get("userIdentity", {}).get("arn") or e.get("Username"),
                             "resources": e.get("Resources", []),
                             "raw": detail,
@@ -622,7 +616,6 @@ def monitor_loop(providers: List[ProviderBase], store: TamperEvidentStore, state
                     token_id = ev.get("token_id")
                     meta = state.get_token(p.name(), token_id) if token_id else None
                     if not meta:
-                        # Try by access_key_id
                         for tid, m in state.get_tokens(p.name()).items():
                             if m.get("access_key_id") == ev.get("access_key_id"):
                                 token_id, meta = tid, m
@@ -630,22 +623,18 @@ def monitor_loop(providers: List[ProviderBase], store: TamperEvidentStore, state
                                 break
                     if not meta:
                         continue
-                    # Emit signed alert
                     br = analyze_blast_radius(p, meta)
                     envelope = emitter.emit(p.name(), ev, br)
-                    # Auto-revoke idempotently
                     try:
                         p.revoke_credentials(token_id, meta)
                     except Exception as e:
                         logging.error("Auto-revoke failed for %s:%s - %s", p.name(), token_id, e)
-                    # Quarantine implicated workloads non-destructively
                     try:
                         quarantined = p.quarantine({"resources": ev.get("resources", [])})
                         if quarantined:
                             logging.info("Quarantined resources: %s", ", ".join(quarantined))
                     except Exception as e:
                         logging.error("Quarantine failed: %s", e)
-                    # Log envelope hash for audit
                     logging.info("Alert record hash: %s", envelope.get("record_hash"))
             except Exception as e:
                 logging.error("Monitor error for %s: %s", p.name(), e)
@@ -714,7 +703,6 @@ def main():
         provider = get_provider(args.provider, state, base_dir, args.dry_run)
         tags = parse_tags(args.tag)
         res = provider.deploy_honeytoken(args.name, tags)
-        # Enforce least-privilege
         provider.enforce_least_privilege(res["meta"])
         print(json.dumps(res, indent=2))
         return
