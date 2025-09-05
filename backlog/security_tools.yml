@@ -590,7 +590,7 @@ security_tools:
   - Upon detection, corresponding credentials are revoked and affected instances are
     tagged/quarantined per policy.
   ready: true
-  status: todo
+  status: needs_work
   area_allowlist:
   - tools/cloud/honeycred_tripwire.py
   - tests/test_cloud_002.py
@@ -619,4 +619,83 @@ security_tools:
   area_allowlist:
   - tools/threat_hunting/ebpf_graph_hunter.py
   - tests/test_hunt_002.py
+  max_changed_lines: 500
+- id: AI_SECURITY-003
+  title: Aegis-LLM Runtime Policy Gateway
+  category: ai_security
+  description: A runtime gateway that enforces zero-trust policies for LLM-enabled
+    applications by sandboxing tool execution, preventing prompt-injection-led egress,
+    validating RAG sources, and detecting covert data exfiltration via semantic and
+    behavioral guards.
+  security_requirements:
+  - Enforce strict egress controls with domain/IP allowlists, content DLP, and metadata-only
+    logging to protect sensitive data.
+  - Isolate tool execution with per-request sandboxes and capability tokens; deny
+    SSRF/FS access by default.
+  - Continuously validate RAG/document provenance via signed attestations and checksum
+    verification before model ingestion.
+  acceptance_tests:
+  - Inject a prompt that attempts SSRF and filesystem reads; verify the gateway blocks
+    the tool call and emits a high-severity alert with minimal redacted context.
+  - Serve a tampered RAG document with invalid signature; confirm ingestion is denied
+    and the incident is recorded with provenance details.
+  - Simulate covert exfiltration via base64 and code block leakage; verify semantic/DLP
+    detectors stop the response and trigger policy-guided remediation.
+  ready: true
+  status: todo
+  area_allowlist:
+  - tools/ai_security/aegis_llm_gateway.py
+  - tests/test_ai_security_003.py
+  max_changed_lines: 500
+- id: CLOUD-003
+  title: 'FederationGuard: OIDC/WIF Trust Boundary Auditor'
+  category: cloud
+  description: Analyzes and continuously tests cloud workload identity federation
+    (OIDC/WIF) configurations across AWS/Azure/GCP to detect token replay risks, audience/issuer
+    drift, CI/CD trust misbinding, and privilege escalation paths.
+  security_requirements:
+  - Continuously fetch and validate OIDC issuer metadata, JWKS rotation, and audience
+    scoping; alert on drift or weak trust policies.
+  - Simulate signed but replayed tokens across accounts/projects to verify replay
+    protections and least-privilege assumptions.
+  - Map CI/CD to cloud trust chains; block high-risk bindings (wildcard audiences,
+    overly broad subject claims) with policy-as-code.
+  acceptance_tests:
+  - Detect a wildcard audience in a WIF provider; confirm high-risk alert with remediation
+    steps and failing policy check.
+  - Replay a previously valid CI-issued OIDC token; verify it is rejected by target
+    cloud due to nonce/exp/binding enforcement and the event is logged.
+  - Introduce an issuer URL drift to a lookalike domain; ensure FederationGuard flags
+    the misbinding and simulates blocked access.
+  ready: true
+  status: todo
+  area_allowlist:
+  - tools/cloud/federation_guard.py
+  - tests/test_cloud_003.py
+  max_changed_lines: 500
+- id: FORENSICS-003
+  title: Container Runtime Forensic Collector
+  category: forensics
+  description: Performs live, low-impact acquisition from containerized workloads,
+    capturing overlay filesystems, in-memory artifacts via eBPF, container metadata,
+    and network snapshots with cryptographic sealing for court-ready evidence.
+  security_requirements:
+  - Use read-only, namespaced mounts and cgroup-aware sampling to avoid altering target
+    state; rate-limit eBPF probes.
+  - Produce cryptographically signed evidence packages with chain-of-custody metadata
+    and reproducible manifests.
+  - Scope collection by policy to exclude secrets beyond necessity; apply on-target
+    encryption with operator-provided keys.
+  acceptance_tests:
+  - "Acquire a running container\u2019s overlay FS and process list without restarting\
+    \ it; verify hash-stable, signed evidence bundle is produced."
+  - Trigger capture while a high-CPU workload runs; ensure probe rate-limiting keeps
+    overhead below defined threshold and no OOM occurs.
+  - Attempt to collect from a container with mounted secrets; confirm policy-based
+    redaction and separate sealed index of redactions.
+  ready: true
+  status: todo
+  area_allowlist:
+  - tools/forensics/container_forensic_collector.py
+  - tests/test_forensics_003.py
   max_changed_lines: 500
