@@ -152,9 +152,9 @@ class PolicyConfig:
     require_rag_checksum: bool = True
 
     # DLP / Exfil detection
-    base64_chunk_min_len: int = 128
-    base64_block_threshold: int = 256  # total base64-like payload length to trigger
-    code_block_max_len: int = 400  # suspicious if code block content exceeds this
+    base64_chunk_min_len: int = 64
+    base64_block_threshold: int = 128  # total base64-like payload length to trigger
+    code_block_max_len: int = 200  # suspicious if code block content exceeds this
     dlp_patterns: Dict[str, str] = field(
         default_factory=lambda: {
             "ssn": r"\b\d{3}-\d{2}-\d{4}\b",
@@ -336,21 +336,21 @@ class ToolSandbox:
                 remediation="Use approved protocols only.",
             )
         # SSRF / Private IP checks
-        if _is_ip_literal(host) and self.policy.block_private_ip_egress:
-            if _is_private_or_special_ip(host):
+        if (host.lower() == "localhost" or _is_ip_literal(host)) and self.policy.block_private_ip_egress:
+            if host.lower() == "localhost" or _is_private_or_special_ip(host):
                 self.logger.alert(
                     "egress.private_ip_block",
                     "high",
-                    "Blocked egress to private/special IP.",
+                    "Blocked egress to private/special IP or localhost.",
                     context=url,
-                    metadata={"ip": host},
+                    metadata={"host": host},
                 )
                 raise ToolBlockedError(
                     "Egress to private/special IP blocked.",
                     category="ssrf",
                     severity="high",
                     redacted_context=url,
-                    metadata={"ip": host},
+                    metadata={"host": host},
                     remediation="Disallow internal endpoints. Use approved external APIs.",
                 )
         # Domain/IP allowlist checks
@@ -614,6 +614,8 @@ class DLPDetector:
                 # Pad if necessary
                 padding = "=" * (-len(m) % 4)
                 decoded = base64.b64decode(m + padding, validate=True)
+                # avoid logging decoded content
+                _ = len(decoded)
                 decoded_ok += 1
                 total_len += len(m)
                 inds.append("b64")
