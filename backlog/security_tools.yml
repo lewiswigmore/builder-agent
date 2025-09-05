@@ -615,7 +615,7 @@ security_tools:
   - Under telemetry spikes, adaptive sampling engages and the system maintains operation
     without packet loss or CPU starvation beyond configured thresholds.
   ready: true
-  status: todo
+  status: needs_work
   area_allowlist:
   - tools/threat_hunting/ebpf_graph_hunter.py
   - tests/test_hunt_002.py
@@ -698,4 +698,85 @@ security_tools:
   area_allowlist:
   - tools/forensics/container_forensic_collector.py
   - tests/test_forensics_003.py
+  max_changed_lines: 500
+- id: FORENSICS-004
+  title: GPU VRAM Forensic Extractor & ML Artifact Hunter
+  category: forensics
+  description: Performs low-impact acquisition and analysis of GPU VRAM across NVIDIA/AMD/iGPU
+    to recover ML model fragments, plaintext secrets, and crypto material, producing
+    cryptographically sealed, court-ready reports.
+  security_requirements:
+  - Acquisition must be read-only, vendor-API or DMA-safe with signed kernel modules;
+    all artifacts hashed (SHA-256) and sealed with timestamped attestations.
+  - Analyzer runs sandboxed with no code execution in target context; parsing uses
+    memory-safe languages or fuzzed parsers to prevent malicious sample exploitation.
+  - Chain-of-custody enforced via Sigstore/in-toto attestations; keys stored in HSM/KMS
+    and access audited.
+  acceptance_tests:
+  - On a host running a GPU-accelerated ML workload, capture a VRAM snapshot and identify
+    float32 tensor blocks matching model weight patterns; emit a sealed report with
+    offsets and confidence scores.
+  - Detect and redact API keys discovered in VRAM from human-readable outputs while
+    preserving an encrypted, sealed original artifact for legal review.
+  - On systems without a supported GPU, gracefully emit a signed nil-attestation with
+    reason codes and zero artifacts.
+  ready: true
+  status: todo
+  area_allowlist:
+  - tools/forensics/gpu_vram_artifact_hunter.py
+  - tests/test_forensics_004.py
+  max_changed_lines: 500
+- id: NET-002
+  title: QUIC/TLS Encrypted Traffic Behavioral IDS
+  category: network
+  description: A privacy-preserving IDS that detects C2, exfiltration, and lateral
+    movement within TLS 1.3 and QUIC/HTTP3 using JA4/JA4S fingerprints, QUIC spin-bit/timing
+    features, ALPN/SNI metadata, and ML-based anomaly models without decrypting payloads.
+  security_requirements:
+  - Collect only metadata features (no payload decryption); apply hashing/anonymization
+    to PII fields and enforce configurable data retention.
+  - eBPF programs must be verified, sandboxed, and rate-limited; feature extraction
+    must not introduce packet drops beyond a defined budget.
+  - Models and rules are versioned and signed; detections include explainable feature
+    vectors and confidence scores.
+  acceptance_tests:
+  - Generate simulated QUIC-based C2 with uncommon JA4 and abnormal spin-bit entropy;
+    system raises a high-confidence alert including the contributing features and
+    fingerprints.
+  - Baseline known CDN traffic (e.g., video streaming) and demonstrate reduced false
+    positives after an unsupervised learning warm-up phase.
+  - Operate on Linux kernel >= 5.10 with eBPF enabled and export structured JSON events
+    to a SIEM endpoint with backpressure handling.
+  ready: true
+  status: todo
+  area_allowlist:
+  - tools/network/quic_behavior_ids.py
+  - tests/test_net_002.py
+  max_changed_lines: 500
+- id: CLOUD-004
+  title: Shadow SaaS/OIDC App Exposure Hunter
+  category: cloud
+  description: Discovers unmanaged OAuth/OIDC apps across IdPs (Okta/AzureAD/Google),
+    validates app security posture (PKCE, redirect URIs, consent), correlates with
+    cloud logs to detect token replay/misuse, and offers policy-as-code remediation
+    with signed attestations.
+  security_requirements:
+  - Default operation is read-only discovery with explicit approval gates for remediation;
+    all actions audit-logged and signed.
+  - Use least-privilege scoped API tokens stored via KMS/HSM; ephemeral credentials
+    preferred with automatic rotation and revocation.
+  - Safe verifier for redirect URIs that tests without enabling open redirects; adheres
+    to IdP and cloud provider rate limits and backoff.
+  acceptance_tests:
+  - Identify an OAuth app lacking PKCE and using wildcard redirect URIs; simulate
+    a benign auth flow and flag misconfiguration with prioritized remediation steps.
+  - Correlate cloud access logs to detect an id_token replay from an anomalous IP/UA;
+    produce a blast-radius report and revocation recommendations.
+  - Produce a Sigstore-signed attestation enumerating discovered apps, risk scores,
+    and policy compliance results suitable for CI/CD gating.
+  ready: true
+  status: todo
+  area_allowlist:
+  - tools/cloud/shadow_oidc_app_hunter.py
+  - tests/test_cloud_004.py
   max_changed_lines: 500
