@@ -313,7 +313,8 @@ class Sandbox:
         os.environ["NO_OUTBOUND"] = "1"
 
     def _restrict_writes(self):
-        self._orig_open = open
+        import builtins as _builtins  # local import to avoid global side effects
+        self._orig_open = _builtins.open
 
         def sandboxed_open(file, mode="r", *args, **kwargs):
             # Writes only allowed inside tmpdir
@@ -324,7 +325,7 @@ class Sandbox:
                     raise PermissionError(f"Write outside sandbox denied: {abspath}")
             return self._orig_open(file, mode, *args, **kwargs)
 
-        globals()["open"] = sandboxed_open  # monkey-patch builtins open in this module
+        _builtins.open = sandboxed_open  # monkey-patch global builtins open
 
     def __enter__(self):
         self._block_network()
@@ -340,7 +341,8 @@ class Sandbox:
         if self._orig_socket_create_connection is not None:
             socket.create_connection = self._orig_socket_create_connection  # type: ignore
         if self._orig_open is not None:
-            globals()["open"] = self._orig_open
+            import builtins as _builtins
+            _builtins.open = self._orig_open
         os.chdir(self._cwd)
         # destroy sandbox dir
         shutil.rmtree(self.tmpdir, ignore_errors=True)
@@ -377,12 +379,13 @@ def detect_backdoor_trigger_text(
             lab = preds[i]
             token_counts.setdefault(t, {}).setdefault(lab, 0)
             token_counts[t][lab] += 1
-    # Rarity: less than 5% of samples
+    # Rarity: less than 5% of samples OR at least a single occurrence for small datasets
     n = len(dataset)
     candidates = []
     for t, cnt in token_total.items():
         freq = cnt / max(1, n)
-        if freq <= 0.05:  # rare token
+        rare_cutoff = max(0.05, 1.0 / max(1, n))  # handle small datasets more leniently
+        if freq <= rare_cutoff:
             label_counts = token_counts.get(t, {})
             if not label_counts:
                 continue
@@ -475,13 +478,16 @@ def spectral_signature_scores_numeric(X: List[List[float]], labels: Optional[Lis
 
 
 def drift_js_divergence(p: Dict[str, float], q: Dict[str, float]) -> float:
-    def kl(a, b):
-        eps = 1e-12
-        return sum(ai * (0 if ai == 0 else (math_log(ai / max(bi, eps)))) for ai, bi in zip(a, b))
-
     import math as _math
-    global math_log
-    math_log = _math.log
+
+    def kl(vec_a, vec_b):
+        eps = 1e-12
+        total = 0.0
+        for ai, bi in zip(vec_a, vec_b):
+            if ai <= 0:
+                continue
+            total += ai * _math.log(ai / max(bi, eps))
+        return total
 
     keys = sorted(set(list(p.keys()) + list(q.keys())))
     pvec = [p.get(k, 0.0) for k in keys]
