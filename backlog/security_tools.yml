@@ -590,7 +590,7 @@ security_tools:
   - Upon detection, corresponding credentials are revoked and affected instances are
     tagged/quarantined per policy.
   ready: true
-  status: todo
+  status: in_progress
   area_allowlist:
   - tools/cloud/honeycred_tripwire.py
   - tests/test_cloud_002.py
