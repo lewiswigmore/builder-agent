@@ -642,7 +642,7 @@ security_tools:
   - Simulate covert exfiltration via base64 and code block leakage; verify semantic/DLP
     detectors stop the response and trigger policy-guided remediation.
   ready: true
-  status: in_progress
+  status: needs_work
   area_allowlist:
   - tools/ai_security/aegis_llm_gateway.py
   - tests/test_ai_security_003.py
