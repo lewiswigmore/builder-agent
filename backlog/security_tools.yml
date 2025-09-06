@@ -694,7 +694,7 @@ security_tools:
   - Attempt to collect from a container with mounted secrets; confirm policy-based
     redaction and separate sealed index of redactions.
   ready: true
-  status: todo
+  status: in_progress
   area_allowlist:
   - tools/forensics/container_forensic_collector.py
   - tests/test_forensics_003.py
