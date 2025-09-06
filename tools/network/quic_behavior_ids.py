@@ -1,5 +1,4 @@
 import argparse
-import base64
 import gzip
 import hmac
 import hashlib
@@ -12,9 +11,9 @@ import struct
 import sys
 import threading
 import time
-from collections import defaultdict, deque
-from datetime import datetime, timedelta
-from typing import Any, Deque, Dict, List, Optional, Tuple
+from collections import defaultdict
+from datetime import datetime
+from typing import Any, Dict, List, Optional, Tuple
 
 # Ethical notice
 ETHICAL_NOTICE = (
@@ -58,7 +57,6 @@ def entropy_bitstream(bits: List[int]) -> float:
         return 0.0
     p1 = ones / len(bits)
     p0 = 1.0 - p1
-    # Shannon entropy normalized to [0,1] since binary entropy max is 1 (in bits)
     import math
 
     return -(p0 * math.log2(p0) + p1 * math.log2(p1))
@@ -125,7 +123,6 @@ class SIEMExporter(threading.Thread):
                     try:
                         with urllib.request.urlopen(req, timeout=self.timeout) as resp:
                             if resp.status >= 200 and resp.status < 300:
-                                # success
                                 buf.clear()
                                 last_send = now_ts()
                                 self.backoff = 1.0
@@ -209,7 +206,6 @@ class RuleEngine:
         self.rare_threshold = 0.01
         self.spin_entropy_low = 0.15
         self.spin_entropy_high = 0.85
-        # frequencies
         self.fp_counts: Dict[str, int] = defaultdict(int)
         self.total_fps = 0
         self.lock = threading.Lock()
@@ -237,8 +233,7 @@ class RuleEngine:
             return self.fp_counts.get(fp, 0) / max(1, self.total_fps)
 
     def evaluate(self, features: Dict[str, Any]) -> Tuple[bool, float, List[str]]:
-        # Returns rule_hit, rule_score, reasons
-        reasons = []
+        reasons: List[str] = []
         score = 0.0
         hit = False
         fp = features.get("ja4q") or features.get("ja4") or "unknown"
@@ -283,8 +278,6 @@ class FlowState:
             self.spin_bits.append(1 if spin_bit else 0)
 
     def summarize(self) -> Dict[str, float]:
-        import math
-
         size_mean = sum(self.sizes) / len(self.sizes) if self.sizes else 0.0
         size_std = (sum((x - size_mean) ** 2 for x in self.sizes) / len(self.sizes)) ** 0.5 if self.sizes else 0.0
         ia_mean = sum(self.arrival) / len(self.arrival) if self.arrival else 0.0
@@ -329,7 +322,6 @@ class QuicTlsBehaviorIDS:
             self.exporter.start()
         self.capture_thread = threading.Thread(target=self._capture_loop, daemon=True)
         self.capture_thread.start()
-        # housekeeping thread
         threading.Thread(target=self._housekeeping_loop, daemon=True).start()
 
     def stop(self):
@@ -357,149 +349,125 @@ class QuicTlsBehaviorIDS:
 
     def _attach_cbpf_filter(self, sock: socket.socket):
         # Attach classic BPF filter to capture only IPv4 TCP/UDP port 443
-        # This filter ignores VLAN/IPv6 for simplicity.
-        # BPF program assembled manually.
-        # Registers and semantics based on classic cBPF.
-        BPF_LD = 0x00
-        BPF_LDX = 0x01
-        BPF_ST = 0x02
-        BPF_STX = 0x03
-        BPF_ALU = 0x04
-        BPF_JMP = 0x05
-        BPF_RET = 0x06
-        BPF_MISC = 0x07
-
-        BPF_W = 0x00
-        BPF_H = 0x08
-        BPF_B = 0x10
-
-        BPF_IMM = 0x00
-        BPF_ABS = 0x20
-        BPF_IND = 0x40
-        BPF_MEM = 0x60
-        BPF_LEN = 0x80
-        BPF_MSH = 0xa0
-
-        BPF_ADD = 0x00
-        BPF_SUB = 0x10
-        BPF_MUL = 0x20
-        BPF_DIV = 0x30
-        BPF_OR = 0x40
-        BPF_AND = 0x50
-        BPF_LSH = 0x60
-        BPF_RSH = 0x70
-        BPF_NEG = 0x80
-        BPF_MOD = 0x90
-        BPF_XOR = 0xa0
-
-        BPF_JA = 0x00
-        BPF_JEQ = 0x10
-        BPF_JGT = 0x20
-        BPF_JGE = 0x30
-        BPF_JSET = 0x40
-
-        BPF_TAX = 0x00
-        BPF_TXA = 0x80
-
-        def ins(code, jt, jf, k):
-            return struct.pack("HBBI", code, jt, jf, k)
-
-        prog = []
-        # 0: A = ldh [12] EtherType
-        prog.append(ins(BPF_LD | BPF_H | BPF_ABS, 0, 0, 12))
-        # 1: if A == 0x0800 (IPv4) jump to 2 else reject
-        prog.append(ins(BPF_JMP | BPF_JEQ | BPF_K, 0, 9, 0x0800))
-        # 2: A = ldb [23] protocol
-        prog.append(ins(BPF_LD | BPF_B | BPF_ABS, 0, 0, 23))
-        # 3: if A == 6 (TCP) jump to TCP handling (next) else jump to UDP check
-        prog.append(ins(BPF_JMP | BPF_JEQ | BPF_K, 0, 3, 6))
-        # TCP path:
-        # 4: A = ldb [14] IHL
-        prog.append(ins(BPF_LD | BPF_B | BPF_ABS, 0, 0, 14))
-        # 5: A = A & 0x0f
-        prog.append(ins(BPF_ALU | BPF_AND | BPF_K, 0, 0, 0x0F))
-        # 6: A = A << 2
-        prog.append(ins(BPF_ALU | BPF_LSH | BPF_K, 0, 0, 2))
-        # 7: X = A
-        prog.append(ins(BPF_MISC | BPF_TAX, 0, 0, 0))
-        # 8: A = ldh [x + 14 + 2] dest port
-        prog.append(ins(BPF_LD | BPF_H | BPF_IND, 0, 0, 14 + 2))
-        # 9: if A == 443 accept else go to UDP path check
-        prog.append(ins(BPF_JMP | BPF_JEQ | BPF_K, 4, 0, 443))
-        # jump 4 means skip next 4 instructions to accept
-        # UDP path:
-        # 10: A = ldb [23] protocol (re-load)
-        prog.append(ins(BPF_LD | BPF_B | BPF_ABS, 0, 0, 23))
-        # 11: if A == 17 (UDP) continue else reject
-        prog.append(ins(BPF_JMP | BPF_JEQ | BPF_K, 0, 3, 17))
-        # 12: A = ldb [14] IHL
-        prog.append(ins(BPF_LD | BPF_B | BPF_ABS, 0, 0, 14))
-        # 13: A = A & 0x0f
-        prog.append(ins(BPF_ALU | BPF_AND | BPF_K, 0, 0, 0x0F))
-        # 14: A = A << 2
-        prog.append(ins(BPF_ALU | BPF_LSH | BPF_K, 0, 0, 2))
-        # 15: X = A
-        prog.append(ins(BPF_MISC | BPF_TAX, 0, 0, 0))
-        # 16: A = ldh [x + 14 + 2] dest port
-        prog.append(ins(BPF_LD | BPF_H | BPF_IND, 0, 0, 14 + 2))
-        # 17: if A == 443 accept else reject
-        prog.append(ins(BPF_JMP | BPF_JEQ | BPF_K, 0, 1, 443))
-        # 18: reject
-        prog.append(ins(BPF_RET | BPF_K, 0, 0, 0))
-        # 19: accept
-        prog.append(ins(BPF_RET | BPF_K, 0, 0, 0xFFFF))
-
-        b = b"".join(prog)
-        fprog = struct.pack("HL", len(prog), struct.addressof(ctypes.create_string_buffer(b)))
-        # The above is not portable; better pack using sock_fprog structure manually:
-        # But Python can't pass pointer to kernel easily; Instead use SOL_SOCKET, SO_ATTACH_FILTER with array.
-        # Workaround: Use 'struct sock_fprog' with pointer as bytes using PACKET_AUX (not possible).
-        # Simpler approach: use SO_ATTACH_FILTER with the raw program bytes after len; but Python needs CTypes.
-        # We'll use ctypes properly:
-        import ctypes
-
-        class sock_filter(ctypes.Structure):
-            _fields_ = [("code", ctypes.c_ushort),
-                        ("jt", ctypes.c_ubyte),
-                        ("jf", ctypes.c_ubyte),
-                        ("k", ctypes.c_uint32)]
-
-        class sock_fprog(ctypes.Structure):
-            _fields_ = [("len", ctypes.c_ushort),
-                        ("filter", ctypes.POINTER(sock_filter))]
-
-        arr = (sock_filter * len(prog))()
-        # Rebuild using our program list:
-        # Re-parse our packed instructions to fill arr
-        off = 0
-        for i in range(len(prog)):
-            code, jt, jf, k = struct.unpack_from("HBBI", b, off)
-            arr[i].code = code
-            arr[i].jt = jt
-            arr[i].jf = jf
-            arr[i].k = k
-            off += struct.calcsize("HBBI")
-        fprog2 = sock_fprog()
-        fprog2.len = len(prog)
-        fprog2.filter = ctypes.cast(arr, ctypes.POINTER(sock_filter))
-        SO_ATTACH_FILTER = 26
+        # Best-effort; if it fails, we continue and filter in userspace.
         try:
-            sock.setsockopt(socket.SOL_SOCKET, SO_ATTACH_FILTER, ctypes.string_at(ctypes.addressof(fprog2), ctypes.sizeof(fprog2)))
-            log("Attached classic BPF filter (verified by kernel).", "INFO")
+            import ctypes
+
+            BPF_LD = 0x00
+            BPF_LDX = 0x01
+            BPF_ST = 0x02
+            BPF_STX = 0x03
+            BPF_ALU = 0x04
+            BPF_JMP = 0x05
+            BPF_RET = 0x06
+            BPF_MISC = 0x07
+
+            BPF_W = 0x00
+            BPF_H = 0x08
+            BPF_B = 0x10
+
+            BPF_IMM = 0x00
+            BPF_ABS = 0x20
+            BPF_IND = 0x40
+            BPF_MEM = 0x60
+            BPF_LEN = 0x80
+            BPF_MSH = 0xa0
+
+            BPF_ADD = 0x00
+            BPF_SUB = 0x10
+            BPF_MUL = 0x20
+            BPF_DIV = 0x30
+            BPF_OR = 0x40
+            BPF_AND = 0x50
+            BPF_LSH = 0x60
+            BPF_RSH = 0x70
+            BPF_NEG = 0x80
+            BPF_MOD = 0x90
+            BPF_XOR = 0xa0
+
+            BPF_JA = 0x00
+            BPF_JEQ = 0x10
+            BPF_JGT = 0x20
+            BPF_JGE = 0x30
+            BPF_JSET = 0x40
+
+            BPF_TAX = 0x00
+            BPF_TXA = 0x80
+            BPF_K = 0x00  # for convenience
+
+            class sock_filter(ctypes.Structure):
+                _fields_ = [("code", ctypes.c_ushort),
+                            ("jt", ctypes.c_ubyte),
+                            ("jf", ctypes.c_ubyte),
+                            ("k", ctypes.c_uint32)]
+
+            class sock_fprog(ctypes.Structure):
+                _fields_ = [("len", ctypes.c_ushort),
+                            ("filter", ctypes.POINTER(sock_filter))]
+
+            def ins(code, jt, jf, k):
+                sf = sock_filter()
+                sf.code = code
+                sf.jt = jt
+                sf.jf = jf
+                sf.k = k
+                return sf
+
+            prog: List[sock_filter] = []
+
+            # 0: if EtherType != IPv4, reject
+            prog.append(ins(BPF_LD | BPF_H | BPF_ABS, 0, 0, 12))                           # A = ldh [12]
+            prog.append(ins(BPF_JMP | BPF_JEQ | BPF_K, 0, 23, 0x0800))                      # if A == IPv4 else jump to reject
+
+            # 2: A = ldb [23] protocol
+            prog.append(ins(BPF_LD | BPF_B | BPF_ABS, 0, 0, 23))
+            # if TCP go to TCP path, else check UDP
+            prog.append(ins(BPF_JMP | BPF_JEQ | BPF_K, 0, 7, 6))                            # if TCP continue, else skip to UDP path
+
+            # TCP path
+            prog.append(ins(BPF_LD | BPF_B | BPF_ABS, 0, 0, 14))                            # A = IHL
+            prog.append(ins(BPF_ALU | BPF_AND | BPF_K, 0, 0, 0x0F))                         # A &= 0x0F
+            prog.append(ins(BPF_ALU | BPF_LSH | BPF_K, 0, 0, 2))                             # A <<= 2
+            prog.append(ins(BPF_MISC | BPF_TAX, 0, 0, 0))                                     # X = A
+            prog.append(ins(BPF_LD | BPF_H | BPF_IND, 0, 0, 14 + 2))                         # A = ldh [x + 16] (dst port)
+            prog.append(ins(BPF_JMP | BPF_JEQ | BPF_K, 6, 0, 443))                           # if dport==443 jump to accept
+
+            # UDP path
+            prog.append(ins(BPF_LD | BPF_B | BPF_ABS, 0, 0, 23))                             # A = proto
+            prog.append(ins(BPF_JMP | BPF_JEQ | BPF_K, 0, 5, 17))                            # if UDP continue else reject
+            prog.append(ins(BPF_LD | BPF_B | BPF_ABS, 0, 0, 14))                             # A = IHL
+            prog.append(ins(BPF_ALU | BPF_AND | BPF_K, 0, 0, 0x0F))                          # A &= 0x0F
+            prog.append(ins(BPF_ALU | BPF_LSH | BPF_K, 0, 0, 2))                              # A <<= 2
+            prog.append(ins(BPF_MISC | BPF_TAX, 0, 0, 0))                                      # X = A
+            prog.append(ins(BPF_LD | BPF_H | BPF_IND, 0, 0, 14 + 2))                          # A = ldh [x + 16] (dst port)
+            prog.append(ins(BPF_JMP | BPF_JEQ | BPF_K, 0, 1, 443))                            # if dport==443 accept else reject
+
+            # reject
+            prog.append(ins(BPF_RET | BPF_K, 0, 0, 0))
+            # accept
+            prog.append(ins(BPF_RET | BPF_K, 0, 0, 0xFFFF))
+
+            arr_type = sock_filter * len(prog)
+            arr = arr_type(*prog)
+            fprog = sock_fprog()
+            fprog.len = len(prog)
+            fprog.filter = ctypes.cast(arr, ctypes.POINTER(sock_filter))
+            SO_ATTACH_FILTER = 26
+            sock.setsockopt(socket.SOL_SOCKET, SO_ATTACH_FILTER, bytes(fprog))
+            log("Attached classic BPF filter (kernel-verified).", "INFO")
         except Exception as e:
-            log(f"Failed to attach BPF filter (continuing without kernel filter): {e}", "WARN")
+            log(f"Failed to attach kernel BPF filter (continuing with userspace filter): {e}", "WARN")
 
     def _capture_loop(self):
         try:
             sock = socket.socket(socket.AF_PACKET, socket.SOCK_RAW, socket.ntohs(0x0003))
             sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 8 * 1024 * 1024)
             sock.bind((self.interface, 0))
-            # Try to attach cBPF filter
             try:
                 self._attach_cbpf_filter(sock)
             except Exception as e:
                 log(f"BPF attach error: {e}", "WARN")
-        except PermissionError as e:
+        except PermissionError:
             log("Permission denied opening raw socket. Run as root with CAP_NET_RAW.", "ERROR")
             return
         except Exception as e:
@@ -508,7 +476,7 @@ class QuicTlsBehaviorIDS:
 
         while not self.stop_event.is_set():
             try:
-                pkt, sa_ll = sock.recvfrom(65535)
+                pkt, _ = sock.recvfrom(65535)
                 ts = now_ts()
                 self.stats["processed_packets"] += 1
                 if not self.bucket.allow():
@@ -528,11 +496,9 @@ class QuicTlsBehaviorIDS:
         eth_proto = struct.unpack("!H", pkt[12:14])[0]
         off = 14
         if eth_proto == 0x8100 and len(pkt) >= 18:
-            # VLAN
             eth_proto = struct.unpack("!H", pkt[16:18])[0]
             off = 18
         if eth_proto == 0x0800:
-            # IPv4
             if len(pkt) < off + 20:
                 return
             iphdr = pkt[off:off + 20]
@@ -548,7 +514,6 @@ class QuicTlsBehaviorIDS:
                 if len(pkt) < nhoff + 20:
                     return
                 sport, dport = struct.unpack("!HH", pkt[nhoff:nhoff + 4])
-                # Only process port 443 flows
                 if sport != 443 and dport != 443:
                     return
                 data_offset = ((pkt[nhoff + 12] >> 4) & 0xF) * 4
@@ -559,17 +524,16 @@ class QuicTlsBehaviorIDS:
             elif proto == 17:  # UDP (QUIC)
                 if len(pkt) < nhoff + 8:
                     return
-                sport, dport, ulen = struct.unpack("!HHH", pkt[nhoff:nhoff + 6])
+                sport, dport, _ = struct.unpack("!HHH", pkt[nhoff:nhoff + 6])
                 if sport != 443 and dport != 443:
                     return
                 app_off = nhoff + 8
                 app_data = pkt[app_off:]
                 self._handle_quic_flow(src_ip=src_ip, dst_ip=dst_ip, sport=sport, dport=dport,
                                        payload=app_data, ts=ts, length=len(pkt))
-        # For brevity, IPv6 is not parsed in this minimal implementation
+        # IPv6 not implemented in this minimal version
 
     def _flow_key(self, ip_version: int, proto: str, src_ip: str, dst_ip: str, sport: int, dport: int) -> Tuple:
-        # Anonymize IPs
         src_h = salted_hash(src_ip, self.hash_salt)
         dst_h = salted_hash(dst_ip, self.hash_salt)
         return (ip_version, proto, src_h, dst_h, sport, dport)
@@ -583,13 +547,11 @@ class QuicTlsBehaviorIDS:
                 flow = FlowState()
                 self.flows[key] = flow
         flow.update(length=length, ts=ts, spin_bit=None)
-        # Parse TLS ClientHello for JA4/ALPN/SNI
         try:
             if payload:
                 self._parse_tls(payload, flow, client=(sport > 1024 and dport == 443))
         except Exception:
             pass
-        # Evaluate detections maybe on flow end; here we evaluate continuously when enough packets
         self._evaluate_and_emit(key, flow, proto="TLS")
 
     def _handle_quic_flow(self, src_ip: str, dst_ip: str, sport: int, dport: int,
@@ -605,8 +567,6 @@ class QuicTlsBehaviorIDS:
         self._evaluate_and_emit(key, flow, proto="QUIC")
 
     def _parse_quic(self, data: bytes, flow: FlowState) -> Optional[int]:
-        # QUIC header parse (minimal). Spin bit observed on short header; for simplicity,
-        # treat bit 0x20 of first byte as spin bit in short header.
         if not data:
             return None
         fb = data[0]
@@ -615,48 +575,38 @@ class QuicTlsBehaviorIDS:
             if len(data) < 6:
                 return None
             version = struct.unpack("!I", data[1:5])[0]
-            # parse DCID/SCID lengths
             pos = 5
             dcid_len = data[pos]
             pos += 1
             if len(data) < pos + dcid_len + 1:
                 return None
-            dcid = data[pos:pos + dcid_len]
             pos += dcid_len
             scid_len = data[pos]
             pos += 1
             if len(data) < pos + scid_len:
                 return None
-            scid = data[pos:pos + scid_len]
             # Build a ja4q-style fingerprint
             flow.ja4q = f"qv{version:08x}_d{dcid_len:02d}s{scid_len:02d}"
-            # Observe freq for rules
             self.rules.observe_fp(flow.ja4q)
             return None
         else:
-            # short header
             spin_bit = 1 if (fb & 0x20) != 0 else 0
-            # No JA4Q change
             return spin_bit
 
     def _parse_tls(self, data: bytes, flow: FlowState, client: bool):
-        # Minimal TLS record parse for ClientHello/ServerHello metadata in plaintext handshake (TCP TLS)
-        # TLS record header is 5 bytes: type(1), version(2), length(2)
         pos = 0
         while pos + 5 <= len(data):
             rec_type = data[pos]
             pos += 1
-            rec_ver = data[pos:pos + 2]
-            pos += 2
+            pos += 2  # rec_ver
             rec_len = struct.unpack("!H", data[pos:pos + 2])[0]
             pos += 2
             if pos + rec_len > len(data):
                 break
             rec_body = data[pos:pos + rec_len]
             pos += rec_len
-            if rec_type != 22:  # handshake
+            if rec_type != 22:
                 continue
-            # Handshake header: type(1), length(3)
             if len(rec_body) < 4:
                 continue
             hs_type = rec_body[0]
@@ -665,12 +615,11 @@ class QuicTlsBehaviorIDS:
                 continue
             hs = rec_body[4:4 + hs_len]
             if hs_type == 1 and client:
-                # ClientHello
                 ch = hs
                 if len(ch) < 34:
                     continue
                 legacy_version = struct.unpack("!H", ch[0:2])[0]
-                idx = 2 + 32  # skip random
+                idx = 2 + 32
                 if idx >= len(ch):
                     continue
                 sid_len = ch[idx]
@@ -683,7 +632,7 @@ class QuicTlsBehaviorIDS:
                 idx += cs_len
                 if idx >= len(ch):
                     continue
-                comp_methods_len = ch[idx]
+                comp_methods_len = ch[idx] if idx < len(ch) else 0
                 idx += 1 + comp_methods_len
                 extensions = []
                 sni = None
@@ -691,40 +640,44 @@ class QuicTlsBehaviorIDS:
                 if idx + 2 <= len(ch):
                     ext_total = struct.unpack("!H", ch[idx:idx + 2])[0]
                     idx += 2
-                    end = idx + ext_total
-                    while idx + 4 <= len(ch) and idx < end:
+                    end = min(len(ch), idx + ext_total)
+                    while idx + 4 <= end:
                         etype = struct.unpack("!H", ch[idx:idx + 2])[0]
                         elen = struct.unpack("!H", ch[idx + 2:idx + 4])[0]
                         idx += 4
                         eval_bytes = ch[idx:idx + elen]
                         idx += elen
                         extensions.append(etype)
-                        if etype == 0:  # SNI
-                            # SNI extension: list len(2), type(1), name len(2), name
+                        if etype == 0:
                             if len(eval_bytes) >= 5:
-                                l = struct.unpack("!H", eval_bytes[0:2])[0]
-                                p = 2
-                                if p + 3 <= len(eval_bytes):
-                                    name_type = eval_bytes[p]
-                                    name_len = struct.unpack("!H", eval_bytes[p + 1:p + 3])[0]
-                                    p += 3
-                                    if p + name_len <= len(eval_bytes):
-                                        sni = eval_bytes[p:p + name_len].decode(errors="ignore")
-                        elif etype == 16:  # ALPN
-                            # length(2), then list of protocols: len(1), proto
-                            if len(eval_bytes) >= 2:
-                                l = struct.unpack("!H", eval_bytes[0:2])[0]
-                                p = 2
-                                while p < 2 + l and p < len(eval_bytes):
-                                    if p >= len(eval_bytes):
+                                try:
+                                    l = struct.unpack("!H", eval_bytes[0:2])[0]
+                                    p = 2
+                                    while p + 3 <= 2 + l and p + 3 <= len(eval_bytes):
+                                        name_type = eval_bytes[p]
+                                        name_len = struct.unpack("!H", eval_bytes[p + 1:p + 3])[0]
+                                        p += 3
+                                        if p + name_len <= len(eval_bytes):
+                                            sni = eval_bytes[p:p + name_len].decode(errors="ignore")
                                         break
-                                    l2 = eval_bytes[p]
-                                    p += 1
-                                    if p + l2 <= len(eval_bytes):
-                                        alpn = eval_bytes[p:p + l2].decode(errors="ignore")
-                                        alpn_list.append(alpn)
-                                        p += l2
-                # Build simplified JA4-like fingerprint: t<ver>c<cs_count>e<ext_count>a<alpn_count>
+                                except Exception:
+                                    pass
+                        elif etype == 16:
+                            if len(eval_bytes) >= 2:
+                                try:
+                                    l = struct.unpack("!H", eval_bytes[0:2])[0]
+                                    p = 2
+                                    while p < 2 + l and p < len(eval_bytes):
+                                        l2 = eval_bytes[p]
+                                        p += 1
+                                        if p + l2 <= len(eval_bytes):
+                                            alpn = eval_bytes[p:p + l2].decode(errors="ignore")
+                                            alpn_list.append(alpn)
+                                            p += l2
+                                        else:
+                                            break
+                                except Exception:
+                                    pass
                 ja4 = f"t{legacy_version:04x}c{len(ciphers):04d}e{len(extensions):03d}a{len(alpn_list):02d}"
                 flow.ja4 = ja4
                 if sni:
@@ -733,16 +686,13 @@ class QuicTlsBehaviorIDS:
                     flow.alpn_hash = salted_hash(",".join(alpn_list), self.hash_salt)
                 self.rules.observe_fp(ja4)
             elif hs_type == 2 and not client:
-                # ServerHello (optional JA4S)
                 sh = hs
                 if len(sh) >= 2:
                     srv_version = struct.unpack("!H", sh[0:2])[0]
                     flow.ja4s = f"s{srv_version:04x}"
 
     def _evaluate_and_emit(self, key: Tuple, flow: FlowState, proto: str):
-        # Build feature vector
         features = flow.summarize()
-        # Add fingerprint attributes
         if proto == "QUIC":
             if flow.ja4q:
                 features["ja4q"] = flow.ja4q
@@ -751,21 +701,17 @@ class QuicTlsBehaviorIDS:
                 features["ja4"] = flow.ja4
             if flow.ja4s:
                 features["ja4s"] = flow.ja4s
-        # Rule evaluation
         rule_hit, rule_score, reasons = self.rules.evaluate(features)
-        # ML model update/score
         if not self.model.ready():
             self.model.update(features)
             return
         score, contrib = self.model.score(features)
-        # Compose confidence: sigmoid-ish
         confidence = min(1.0, (score / self.model.threshold) * 0.7 + (rule_score / 3.0) * 0.3)
         severity = "low"
         if confidence > 0.8:
             severity = "high"
         elif confidence > 0.5:
             severity = "medium"
-        # Trigger alert based on combined conditions
         trigger = False
         reasons_all = list(reasons)
         if rule_hit and score >= self.model.threshold * 0.75:
@@ -778,7 +724,6 @@ class QuicTlsBehaviorIDS:
             reasons_all.append("ml_anomaly_severe")
 
         if trigger:
-            # Build event
             src_h = key[2]
             dst_h = key[3]
             sport = key[4]
@@ -841,14 +786,12 @@ class QuicTlsBehaviorIDS:
                 self.siem_queue.put_nowait(s)
             except queue.Full:
                 self.stats["queue_full"] += 1
-                # drop oldest to make space
                 try:
                     _ = self.siem_queue.get_nowait()
                     self.siem_queue.put_nowait(s)
                 except Exception:
                     self.stats["dropped_events"] += 1
         else:
-            # fallback to stdout
             print(s, flush=True)
 
 
