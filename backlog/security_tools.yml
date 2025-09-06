@@ -748,7 +748,7 @@ security_tools:
   - Operate on Linux kernel >= 5.10 with eBPF enabled and export structured JSON events
     to a SIEM endpoint with backpressure handling.
   ready: true
-  status: todo
+  status: needs_work
   area_allowlist:
   - tools/network/quic_behavior_ids.py
   - tests/test_net_002.py
@@ -867,4 +867,97 @@ security_tools:
   area_allowlist:
   - tools/iot/canary_lab.py
   - tests/test_iot_004.py
+  max_changed_lines: 500
+- id: AISEC-005
+  title: 'TrainSentinel: Real-time Poison & Backdoor Guard for Distributed ML Training'
+  category: ai_security
+  description: Instruments PyTorch/TF/JAX training runs to score batches for poisoning/backdoors
+    via spectral signatures, activation clustering, and gradient norm/variance drift;
+    enforces DP/clipping invariants, seeds canary samples, halts or quarantines suspect
+    steps, and emits signed, reproducible attestations for CI/CD gates across GPU/TPU
+    clusters.
+  security_requirements:
+  - Operate with least privilege as a sidecar/plug-in with read-only hooks to gradients/activations;
+    never persist raw training data; encrypt telemetry in transit and at rest.
+  - Produce verifiable provenance (Sigstore/in-toto) for detections and model checkpoints;
+    deterministic configs with policy-as-code allowlists for frameworks and nodes.
+  - 'Safe-guard actions: phase to shadow mode by default, human-approval gates for
+    training halts, automatic rollback to last safe checkpoint without data loss.'
+  acceptance_tests:
+  - When a 1% backdoor trigger is injected into a sample image dataset (e.g., MNIST/CIFAR),
+    the system flags >90% of tainted batches within 2 epochs and places training in
+    hold-safe mode with a signed attestation.
+  - On a distributed multi-GPU job, gradient clipping violations and activation clustering
+    anomalies are detected without leaking raw sample content; all telemetry is encrypted
+    and keys are rotated.
+  - With shadow mode enabled, no training interruptions occur; upon policy switch
+    to enforce, the system halts on threshold breach and rolls back to the last verified
+    checkpoint.
+  ready: true
+  status: todo
+  area_allowlist:
+  - tools/ai_security/train_sentinel.py
+  - tests/test_aisec_005.py
+  max_changed_lines: 500
+- id: CLOUD-006
+  title: SaaS Connector Egress Auditor
+  category: cloud
+  description: Continuously audits SaaS integrations (e.g., Slack/Google Workspace/Salesforce)
+    by deploying scoped honey artifacts and canary tokens, validating OAuth scopes/redirects,
+    simulating policy-constrained exports, and detecting cross-tenant or unsanctioned
+    egress with remediation-as-code and signed evidence bundles.
+  security_requirements:
+  - Use isolated test tenants and least-privilege OAuth apps; never alter production
+    artifacts; rate-limit API calls and enforce time-bounded token lifetimes and automatic
+    revocation.
+  - Cryptographically seal honey artifacts and telemetry (Sigstore/Rekor) and store
+    secrets in a vault; strict RBAC and immutable audit logs.
+  - 'Non-destructive validation: read-only checks by default with optional, explicit,
+    policy-gated remediation (scope tightening, webhook quarantine) requiring human
+    approval.'
+  acceptance_tests:
+  - A mis-scoped Slack app with files:read across all workspaces is detected after
+    a planted honey document access; the tool correlates the access path and emits
+    a signed incident report.
+  - A simulated connector attempts to exfiltrate a honey token via an external webhook;
+    the auditor verifies that DLP/policy blocks the egress or raises a high-severity
+    finding if not.
+  - Token rotation occurs for test apps; the auditor confirms revocation, removes
+    stale grants, and validates no residual access using replay attempts logged as
+    blocked.
+  ready: true
+  status: todo
+  area_allowlist:
+  - tools/cloud/saas_connector_egress_auditor.py
+  - tests/test_cloud_006.py
+  max_changed_lines: 500
+- id: HUNT-003
+  title: 'IdP Attack Pattern Hunter: MFA Fatigue, AiTM & Consent Abuse'
+  category: threat_hunting
+  description: Correlates IdP (Okta/AzureAD/Google) and endpoint/network logs to detect
+    MFA fatigue/push-bombing, adversary-in-the-middle (Evilginx) token theft, device-code
+    phishing, and OAuth consent-grant abuse using temporal/graph analytics; guides
+    response with human-in-the-loop playbooks and signed incident bundles.
+  security_requirements:
+  - Read-only ingestion from IdP and EDR/SIEM sources by default; response actions
+    are optional and require explicit policy and human approval with full audit trails.
+  - PII minimization and field-level encryption for sensitive attributes; enforce
+    retention and access controls with tamper-evident logging.
+  - Deterministic detection policies plus ML-assisted heuristics with versioned rulepacks
+    and cryptographically signed detections/evidence.
+  acceptance_tests:
+  - Simulated MFA fatigue shows >20 push prompts in 10 minutes from new ASN/IPs culminating
+    in an approval; the hunter raises a high-confidence alert and proposes a step-up
+    auth + session reset playbook.
+  - AiTM pattern with mismatched device fingerprint and anomalous token issuer is
+    detected; the system identifies suspected token replay and prepares a signed containment
+    bundle for session revocation.
+  - A newly created OAuth app requests high-risk scopes and gains consent from a single
+    user; the hunter flags consent abuse, correlates unusual API calls, and recommends
+    admin review with one-click quarantine (if enabled).
+  ready: true
+  status: todo
+  area_allowlist:
+  - tools/threat_hunting/idp_attack_pattern_hunter.py
+  - tests/test_hunt_003.py
   max_changed_lines: 500
