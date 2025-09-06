@@ -668,7 +668,7 @@ security_tools:
   - Introduce an issuer URL drift to a lookalike domain; ensure FederationGuard flags
     the misbinding and simulates blocked access.
   ready: true
-  status: in_progress
+  status: needs_work
   area_allowlist:
   - tools/cloud/federation_guard.py
   - tests/test_cloud_003.py
