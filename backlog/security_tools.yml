@@ -748,7 +748,7 @@ security_tools:
   - Operate on Linux kernel >= 5.10 with eBPF enabled and export structured JSON events
     to a SIEM endpoint with backpressure handling.
   ready: true
-  status: todo
+  status: in_progress
   area_allowlist:
   - tools/network/quic_behavior_ids.py
   - tests/test_net_002.py
