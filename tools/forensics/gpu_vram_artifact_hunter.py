@@ -10,6 +10,7 @@ import struct
 import sys
 import time
 import hashlib
+import hmac
 import secrets as pysecrets
 from datetime import datetime, timezone
 from typing import List, Dict, Optional, Tuple
@@ -30,7 +31,7 @@ except Exception:
 
 TOOL_NAME = "GPU VRAM Forensic Extractor & ML Artifact Hunter"
 TOOL_ID = "gpu-vram-artifact-hunter"
-TOOL_VERSION = "0.1.0"
+TOOL_VERSION = "0.2.0"
 
 # --------------------------- Utility ---------------------------------
 
@@ -78,26 +79,36 @@ ETHICS_WARNING = (
 # --------------------------- Crypto/Attestation ----------------------
 
 class CryptoManager:
-    def __init__(self, signing_key_b64: Optional[str], enc_key_b64: Optional[str]):
+    def __init__(self, signing_key_b64: Optional[str], enc_key_b64: Optional[str], allow_generate: bool = False):
+        self.ephemeral = False
         if Ed25519PrivateKey is None or AESGCM is None:
-            raise RuntimeError("cryptography library is required. Please install 'cryptography'.")
+            raise RuntimeError("cryptography library is required. Please install 'cryptography' or use --insecure-allow-fallback-crypto.")
         if not signing_key_b64:
-            raise RuntimeError("Missing Ed25519 signing key (env GPU_FORENSICS_SIGNING_KEY).")
-        if not enc_key_b64:
-            raise RuntimeError("Missing AES-GCM encryption key (env GPU_FORENSICS_ENC_KEY).")
-        try:
-            sk_bytes = b64d(signing_key_b64)
-            if len(sk_bytes) == 32:
-                self.sk = Ed25519PrivateKey.from_private_bytes(sk_bytes)
-            elif len(sk_bytes) == 64:
-                # Some encodings include public key; take first 32 bytes
-                self.sk = Ed25519PrivateKey.from_private_bytes(sk_bytes[:32])
+            if allow_generate:
+                self.ephemeral = True
+                self.sk = Ed25519PrivateKey.generate()
             else:
-                raise ValueError("Signing key must be 32 or 64 bytes in base64.")
-        except Exception as e:
-            raise RuntimeError(f"Invalid signing key: {human_reason(e)}")
+                raise RuntimeError("Missing Ed25519 signing key (env GPU_FORENSICS_SIGNING_KEY).")
+        else:
+            try:
+                sk_bytes = b64d(signing_key_b64)
+                if len(sk_bytes) == 32:
+                    self.sk = Ed25519PrivateKey.from_private_bytes(sk_bytes)
+                elif len(sk_bytes) == 64:
+                    self.sk = Ed25519PrivateKey.from_private_bytes(sk_bytes[:32])
+                else:
+                    raise ValueError("Signing key must be 32 or 64 bytes in base64.")
+            except Exception as e:
+                raise RuntimeError(f"Invalid signing key: {human_reason(e)}")
         try:
-            self.enc_key = b64d(enc_key_b64)
+            if not enc_key_b64:
+                if allow_generate:
+                    self.enc_key = os.urandom(32)
+                    self.ephemeral = True or self.ephemeral
+                else:
+                    raise RuntimeError("Missing AES-GCM encryption key (env GPU_FORENSICS_ENC_KEY).")
+            else:
+                self.enc_key = b64d(enc_key_b64)
             if len(self.enc_key) not in (16, 24, 32):
                 raise ValueError("Encryption key must be 128/192/256-bit in base64.")
         except Exception as e:
@@ -114,6 +125,33 @@ class CryptoManager:
 
     def encrypt_chunk(self, nonce: bytes, plaintext: bytes) -> bytes:
         return self.aesgcm.encrypt(nonce, plaintext, None)
+
+class InsecureCryptoFallback:
+    def __init__(self):
+        # DO NOT USE IN PRODUCTION. For testing only.
+        self._sig_key = os.urandom(32)
+        self.enc_key = os.urandom(32)
+        self.ephemeral = True
+
+    def public_key_b64(self) -> str:
+        return b64e(self._sig_key)
+
+    def sign(self, data: bytes) -> bytes:
+        return hmac.new(self._sig_key, data, hashlib.sha256).digest()
+
+    def encrypt_chunk(self, nonce: bytes, plaintext: bytes) -> bytes:
+        # Insecure XOR keystream from SHA256(nonce||counter)
+        out = bytearray(len(plaintext))
+        counter = 0
+        pos = 0
+        while pos < len(plaintext):
+            block_key = hashlib.sha256(self.enc_key + nonce + struct.pack(">I", counter)).digest()
+            l = min(len(block_key), len(plaintext) - pos)
+            for i in range(l):
+                out[pos + i] = plaintext[pos + i] ^ block_key[i]
+            pos += l
+            counter += 1
+        return bytes(out)
 
 # --------------------------- Acquisition Backends --------------------
 
@@ -309,13 +347,13 @@ class Analyzer:
 
 # --------------------------- DSSE / in-toto --------------------------
 
-def dsse_envelope(payload_json: bytes, signer: CryptoManager) -> Dict:
+def dsse_envelope(payload_json: bytes, signer) -> Dict:
     payload_b64 = b64e(payload_json)
     # keyid: SHA-256 of pubkey
     pub_b64 = signer.public_key_b64()
     pub_bytes = b64d(pub_b64)
     keyid = hashlib.sha256(pub_bytes).hexdigest()[:16]
-    # DSSE signature signs preamble + payload per spec; for simplicity we sign the payload bytes directly.
+    # DSSE signature signs payload bytes (simplified)
     sig = signer.sign(payload_json)
     return {
         "payloadType": "application/vnd.in-toto+json",
@@ -337,16 +375,23 @@ def run(args):
 
     os.makedirs(args.output_dir, exist_ok=True)
 
-    # Load crypto manager (required)
+    # Load crypto manager
+    signer = None
+    crypto_fallback = False
     try:
         signer = CryptoManager(
             signing_key_b64=os.environ.get("GPU_FORENSICS_SIGNING_KEY"),
             enc_key_b64=os.environ.get("GPU_FORENSICS_ENC_KEY"),
+            allow_generate=args.insecure_allow_fallback_crypto or os.environ.get("GPU_FORENSICS_ALLOW_FALLBACK") == "1",
         )
     except Exception as e:
-        # Produce signed nil-attestation if we cannot load crypto? We cannot sign without signing key.
-        print(f"ERROR: {e}", file=sys.stderr)
-        sys.exit(3)
+        if args.insecure_allow_fallback_crypto or os.environ.get("GPU_FORENSICS_ALLOW_FALLBACK") == "1":
+            print(f"WARNING: Using insecure crypto fallback: {human_reason(e)}", file=sys.stderr)
+            signer = InsecureCryptoFallback()
+            crypto_fallback = True
+        else:
+            print(f"ERROR: {e}", file=sys.stderr)
+            sys.exit(3)
 
     acq = Acquirer(args).acquire()
     host = socket.gethostname()
@@ -363,6 +408,8 @@ def run(args):
             "artifacts": [],
             "acquisition": {"backend": args.backend, "read_only": True}
         }
+        if crypto_fallback or (hasattr(signer, "ephemeral") and signer.ephemeral):
+            report["note"] = "Ephemeral or fallback cryptography used for testing; not production-grade."
         predicate = {
             "_type": "https://in-toto.io/Statement/v0.1",
             "subject": [{"name": "gpu-vram-snapshot", "digest": {}}],
@@ -372,8 +419,8 @@ def run(args):
         payload = json.dumps(predicate, sort_keys=True).encode("utf-8")
         envelope = dsse_envelope(payload, signer)
         out_report = os.path.join(args.output_dir, "nil_attestation.json")
-        with open(out_report, "w", encoding="utf-8") as f:
-            json.dump(envelope, f, indent=2, sort_keys=True)
+        with open(out_report, "w", encoding="utf-8") as f3:
+            json.dump(envelope, f3, indent=2, sort_keys=True)
         print(f"Nil-attestation written to {out_report}")
         return
 
@@ -392,6 +439,8 @@ def run(args):
             "artifacts": [],
             "acquisition": {"backend": args.backend, "read_only": True, "source": src_path}
         }
+        if crypto_fallback or (hasattr(signer, "ephemeral") and signer.ephemeral):
+            report["note"] = "Ephemeral or fallback cryptography used for testing; not production-grade."
         predicate = {
             "_type": "https://in-toto.io/Statement/v0.1",
             "subject": [{"name": "gpu-vram-snapshot", "digest": {}}],
@@ -415,7 +464,7 @@ def run(args):
         f.close()
         sys.exit(4)
 
-    # Write container header for chunked AES-GCM
+    # Write container header for chunked encryption
     version = 1
     nonce_prefix = os.urandom(8)
     chunk_size = max(4096, min(4 * 1024 * 1024, args.chunk_size))
@@ -472,6 +521,8 @@ def run(args):
 
     # Build report
     end_time = now_iso8601()
+    encryption_alg = "AES-GCM" if not isinstance(signer, InsecureCryptoFallback) else "XOR-SHA256-PRG (INSECURE)"
+    key_bits = 8 * getattr(signer, "enc_key", b"\x00"*32).__len__()
     report = {
         "tool": {"id": TOOL_ID, "name": TOOL_NAME, "version": TOOL_VERSION},
         "host": host,
@@ -488,7 +539,7 @@ def run(args):
             "sha256": snapshot_sha256,
             "encrypted_path": os.path.abspath(enc_out_path),
             "encrypted_sha256": enc_sha256,
-            "encryption": "AES-256-GCM" if len(signer.enc_key) == 32 else f"AES-{8*len(signer.enc_key)}-GCM",
+            "encryption": f"{encryption_alg}-{key_bits}"
         },
         "findings": {
             "tensors": analyzer.tensor_hits,
@@ -497,7 +548,9 @@ def run(args):
         "controls": {
             "read_only_acquisition": True,
             "sandboxed_analyzer": "logical-no-exec-parsing-only",
-            "parser_safety": "no code execution, regex parsing; optional numpy used"
+            "parser_safety": "no code execution, regex parsing; optional numpy used",
+            "crypto_fallback_used": isinstance(signer, InsecureCryptoFallback),
+            "ephemeral_keys_used": bool(getattr(signer, "ephemeral", False))
         },
         "chain_of_custody": {
             "attestations": [],
@@ -558,6 +611,8 @@ def parse_args():
     p.add_argument("--tensor-block-kb", type=int, default=64, help="Block size in KB for tensor detection.")
     p.add_argument("--max-tensor-hits", type=int, default=128, help="Maximum number of tensor blocks to report.")
     p.add_argument("--disable-numpy", action="store_true", help="Disable numpy-based heuristics.")
+    p.add_argument("--insecure-allow-fallback-crypto", action="store_true",
+                   help="Allow insecure crypto fallback if 'cryptography' or keys are unavailable (testing only).")
     p.add_argument("--i-acknowledge-authorized-use", action="store_true", help="Acknowledge authorized use only.")
     return p.parse_args()
 
