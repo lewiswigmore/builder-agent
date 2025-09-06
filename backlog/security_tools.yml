@@ -721,7 +721,7 @@ security_tools:
   - On systems without a supported GPU, gracefully emit a signed nil-attestation with
     reason codes and zero artifacts.
   ready: true
-  status: todo
+  status: in_progress
   area_allowlist:
   - tools/forensics/gpu_vram_artifact_hunter.py
   - tests/test_forensics_004.py
