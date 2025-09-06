@@ -99,6 +99,8 @@ class PolicyEngine:
         return None
 
     def _rule_block_overbroad_subject(self, provider: ProviderConfig) -> Optional[PolicyFailure]:
+        if provider.allow_wildcard_subject:
+            return None
         for pat in provider.subject_patterns:
             if pat.strip() == "*" or pat.strip() in ("repo:*", "sub:*") or "*" in pat:
                 return PolicyFailure(
@@ -186,6 +188,36 @@ class FederationGuard:
         self._stop_event.set()
 
     def _check_provider(self, provider: ProviderConfig, http_timeout: int = 5) -> None:
+        # Proactive issuer lookalike detection if metadata_url indicates drift
+        if provider.metadata_url and not provider.issuer_drift_detected:
+            try:
+                exp = urlparse(provider.expected_issuer)
+                meta = urlparse(provider.metadata_url)
+                ehost = (exp.netloc or exp.path).lower()
+                mhost = (meta.netloc or meta.path).lower()
+                if ehost and mhost and ehost != mhost:
+                    lookalike, reason = self._is_lookalike_url(provider.expected_issuer, provider.metadata_url)
+                    provider.issuer_drift_detected = True
+                    provider.drift_reason = reason or "Issuer mismatch"
+                    severity = "HIGH" if lookalike else "MEDIUM"
+                    self._raise_alert(
+                        Alert(
+                            id="FG-DRIFT-ISSUER",
+                            severity=severity,
+                            message=f"Issuer drift suspected for provider '{provider.name}': expected host '{ehost}', metadata points to '{mhost}'.",
+                            remediation=(
+                                "Verify the issuer and metadata URL. If this change was unintended, revert immediately and block token exchanges. "
+                                "Ensure trust bindings reference the exact issuer domain."
+                            ),
+                            provider=provider.name,
+                            policy_check_failed=True,
+                            details={"expected_host": ehost, "metadata_host": mhost, "reason": reason, "lookalike": lookalike, "metadata_url": provider.metadata_url},
+                        )
+                    )
+            except Exception as e:
+                provider.last_error = f"metadata_url_check_error: {e}"
+                self._record_event("metadata_url_check_error", {"provider": provider.name, "error": str(e)})
+
         discovery = self._fetch_discovery(provider, http_timeout=http_timeout)
         if discovery:
             provider.last_discovery = discovery
