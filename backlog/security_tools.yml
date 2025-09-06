@@ -668,7 +668,7 @@ security_tools:
   - Introduce an issuer URL drift to a lookalike domain; ensure FederationGuard flags
     the misbinding and simulates blocked access.
   ready: true
-  status: todo
+  status: needs_work
   area_allowlist:
   - tools/cloud/federation_guard.py
   - tests/test_cloud_003.py
@@ -779,4 +779,92 @@ security_tools:
   area_allowlist:
   - tools/cloud/shadow_oidc_app_hunter.py
   - tests/test_cloud_004.py
+  max_changed_lines: 500
+- id: AI_SECURITY-004
+  title: 'ModelExfil Guard: Model Stealing & Adversarial Query Detector'
+  category: ai_security
+  description: Detects model-stealing, fine-tuning abuse, and adversarial query campaigns
+    by profiling query semantics/entropy, watermark challenges, and behavioral fingerprints
+    across API and self-hosted LLM endpoints; enforces adaptive throttling and produces
+    signed, forensically sound audit trails.
+  security_requirements:
+  - 'Privacy-preserving telemetry: only store hashed/aggregated features (n-gram stats,
+    perplexity bins, embedding LSH), apply differential privacy noise, and redact
+    PII by default.'
+  - Signed, append-only audit logs and alerts using Sigstore/Rekor with tamper-evident
+    digests and time-stamping for chain-of-custody.
+  - 'Safety-first enforcement: challenge/ratelimit/deny policies that never alter
+    model weights or prompts; explicit rollback and dry-run modes.'
+  acceptance_tests:
+  - Simulate a KnockoffNets-style extraction (decision/query-only) against a public
+    endpoint; detector flags anomalous query distribution and raises a high-severity
+    alert with client fingerprint correlation.
+  - Issue rotating-IP burst queries with jailbreak tokens; system escalates to challenge
+    mode (canary/watermark prompts), detects prompt-injection patterns, and throttles
+    the client.
+  - Generate an incident report and verify it is signed, includes only feature-level
+    telemetry (no raw prompts), and is verifiable via Rekor inclusion proof.
+  ready: true
+  status: todo
+  area_allowlist:
+  - tools/ai_security/modelexfil_guard.py
+  - tests/test_ai_security_004.py
+  max_changed_lines: 500
+- id: CLOUD-005
+  title: 'DataPerimeter Probe: Cloud Data Egress Policy Validator'
+  category: cloud
+  description: Continuously validates AWS/Azure/GCP data perimeter controls (S3/GCS/Blob
+    + VPC/VNet/VPC-SC/PrivateLink) using cryptographic canaries, policy-as-code checks
+    (OPA), and non-destructive egress simulations to uncover bypasses via presigned
+    URLs, cross-account roles, and mis-scoped endpoints.
+  security_requirements:
+  - Scoped, read-only discovery and write-only to dedicated test resources with labels/TTL;
+    no destructive operations on production assets.
+  - Rate-limited probes with explicit account/project/region allowlists; automatic
+    pause on anomaly spikes or guardrail violations.
+  - Canary objects and tokens are uniquely identified, signed, and time-bounded; all
+    probe actions are logged with correlation IDs and immutable storage.
+  acceptance_tests:
+  - On a bucket missing VPC/Private Endpoint constraints, simulate an egress read
+    from an untrusted network and verify the tool detects and reports the leak path
+    with remediation.
+  - Create a presigned URL and attempt cross-region access; confirm the event is detected,
+    correlated with CloudTrail/Azure Activity Logs/GCP Audit Logs, and includes the
+    correct correlation ID.
+  - Verify auto-cleanup removes only labeled canary resources and that no production
+    bucket policies or objects are modified.
+  ready: true
+  status: todo
+  area_allowlist:
+  - tools/cloud/dataperimeter_probe.py
+  - tests/test_cloud_005.py
+  max_changed_lines: 500
+- id: IOT-004
+  title: 'CANary Lab: Automotive UDS/CAN Fuzzer & Forensic Recorder'
+  category: iot
+  description: Stateful, safety-aware fuzzing and diagnostics of automotive networks
+    (CAN, ISO-TP, UDS) with rate-limited service probing (e.g., 0x10/0x11/0x27), automatic
+    rollback to passive sniffing on critical DTCs, and signed evidence bundles (PCAP+UDS
+    transcripts) for incident response.
+  security_requirements:
+  - 'Hardware-in-the-loop safety: enforce vehicle speed/RPM gating, VIN/ECU allowlists,
+    and safe service sets; require explicit operator confirmation for riskier UDS
+    services.'
+  - 'Rate control and session awareness: inter-frame gaps, busload limits, and state
+    tracking to avoid bricking ECUs; immediate fail-safe on airbags/ABS/powertrain
+    fault codes.'
+  - 'Evidence integrity: cryptographically sign captures, transcripts, and manifests
+    with synchronized time sources; store hashes in an append-only log.'
+  acceptance_tests:
+  - Against a test bench ECU, detect an unsecured diagnostic session (default seed/key)
+    and log a finding when securityAccess is granted using a known weak algorithm.
+  - While actively probing, simulate vehicle speed above threshold; tool halts active
+    fuzzing and switches to passive sniffing, emitting a safety event.
+  - Export a signed evidence bundle containing CAN PCAP, UDS transcript, and manifest;
+    verify signatures and hash chain correctness.
+  ready: true
+  status: todo
+  area_allowlist:
+  - tools/iot/canary_lab.py
+  - tests/test_iot_004.py
   max_changed_lines: 500
