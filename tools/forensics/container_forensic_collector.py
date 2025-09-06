@@ -52,10 +52,19 @@ def normalize_tarinfo(ti: tarfile.TarInfo, fixed_mtime: int) -> tarfile.TarInfo:
 def deterministic_tar_add(tar: tarfile.TarFile, path: Path, arcname: Path, fixed_mtime: int) -> None:
     st = path.lstat()
     if stat.S_ISLNK(st.st_mode):
-        ti = tarfile.TarInfo(str(arcname.as_posix())); ti = normalize_tarinfo(ti, fixed_mtime)
-        ti.type = tarfile.SYMTYPE; ti.linkname = os.readlink(str(path)); tar.addfile(ti); return
-    ti = tar.gettarinfo(str(path), arcname=str(arcname.as_posix())); ti = normalize_tarinfo(ti, fixed_mtime)
-    with path.open("rb") as f if ti.isreg() else None as fo: tar.addfile(ti, fileobj=fo) if ti.isreg() else tar.addfile(ti)
+        ti = tarfile.TarInfo(str(arcname.as_posix()))
+        ti = normalize_tarinfo(ti, fixed_mtime)
+        ti.type = tarfile.SYMTYPE
+        ti.linkname = os.readlink(str(path))
+        tar.addfile(ti)
+        return
+    ti = tar.gettarinfo(str(path), arcname=str(arcname.as_posix()))
+    ti = normalize_tarinfo(ti, fixed_mtime)
+    if ti.isreg():
+        with path.open("rb") as f:
+            tar.addfile(ti, fileobj=f)
+    else:
+        tar.addfile(ti)
 
 def safe_mkdir(p: Path) -> None: p.mkdir(parents=True, exist_ok=True)
 def which(cmd: str) -> Optional[str]: return shutil.which(cmd)
@@ -273,7 +282,13 @@ def tar_overlay(root: Path, dest_tar: Path, policy: RedactionPolicy, fixed_mtime
                 rel = p.relative_to(root); arc = Path(str(rel))
                 deterministic_tar_add(tf, p, arc, fixed_mtime)
             except FileNotFoundError: continue
-            except PermissionError: redactions.append({"path": "/" + str(arc), "reason":"permission_denied"}); continue
+            except PermissionError: 
+                try:
+                    arc = Path(str(p.relative_to(root)))
+                    redactions.append({"path": "/" + str(arc), "reason":"permission_denied"})
+                except Exception:
+                    redactions.append({"path": str(p), "reason":"permission_denied"})
+                continue
 
 # ----------------------- Signing and Encryption -----------------------
 def load_hmac_key(path: Optional[Path]) -> Optional[bytes]:
