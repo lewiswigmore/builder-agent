@@ -805,7 +805,7 @@ security_tools:
   - Generate an incident report and verify it is signed, includes only feature-level
     telemetry (no raw prompts), and is verifiable via Rekor inclusion proof.
   ready: true
-  status: todo
+  status: needs_work
   area_allowlist:
   - tools/ai_security/modelexfil_guard.py
   - tests/test_ai_security_004.py
@@ -1040,4 +1040,88 @@ security_tools:
   area_allowlist:
   - tools/cryptography/pq_migrate_auditor.py
   - tests/test_crypto_002.py
+  max_changed_lines: 500
+- id: AI_SECURITY-007
+  title: 'ToolForge Auditor: LLM Tool/Plugin Supply Chain Guard'
+  category: ai_security
+  description: Audits LLM tools/plugins (function-call adapters, LangChain tools,
+    HTTP connectors) by verifying signatures, generating SBOMs, sandboxing install/execute
+    phases to detect malicious behaviors, enforcing network egress allowlists, and
+    emitting signed attestations for CI/CD gates.
+  security_requirements:
+  - Hermetic sandbox with seccomp/AppArmor and eBPF tracing; enforce filesystem RO
+    mounts and network egress allowlists per tool manifest.
+  - Verify supply-chain integrity using Sigstore (cosign) and generate SPDX/CycloneDX
+    SBOMs with pinned hashes and vulnerability correlation.
+  - Emit cryptographically signed, tamper-evident attestations (in-toto) and redact
+    secrets; never persist credentials beyond session.
+  acceptance_tests:
+  - Given a plugin manifest with an unpinned dependency, the auditor fails policy
+    and reports SBOM diff and remediation to pin exact versions.
+  - When a tool attempts unexpected outbound DNS/HTTP during dynamic analysis, the
+    sandbox blocks it, records eBPF evidence, and produces a signed incident bundle.
+  - For a tool release signed by a trusted key, the auditor verifies Rekor inclusion,
+    generates an SBOM, and passes with a signed attestation artifact.
+  ready: true
+  status: todo
+  area_allowlist:
+  - tools/ai_security/toolforge_auditor.py
+  - tests/test_ai_security_toolforge_auditor.py
+  max_changed_lines: 500
+- id: CLOUD-007
+  title: 'Metasurf Watch: IMDS/SSRF Exposure Scanner & Canary'
+  category: cloud
+  description: Continuously audits AWS/Azure/GCP workloads for SSRF paths to metadata
+    services, validates IMDS hardening (tokens/hop limits/endpoint policies), deploys
+    scoped honey IMDS endpoints and canary credentials, correlates cloud logs for
+    abuse, and provides remediation-as-code.
+  security_requirements:
+  - Perform safe, rate-limited probes; never request sensitive real metadata and prefer
+    simulated or canary endpoints with least-privilege scopes.
+  - Cryptographically sign findings with timestamps and workload identity proofs;
+    store evidence in write-once buckets with retention policies.
+  - Auto-rotate and immediately revoke any triggered canary credentials; never exceed
+    principle of least privilege for detectors and remediation.
+  acceptance_tests:
+  - Detect an EC2 instance with IMDSv1 enabled and hop limit > 1; emit high-severity
+    finding with Terraform/CLI remediation steps.
+  - When a container SSRF attempts 169.254.169.254 or metadata.google.internal, the
+    sensor blocks/flags access, ties it to the originating pod, and opens a ticket
+    with blast-radius analysis.
+  - Upon canary token usage observed in CloudTrail/Activity Logs, trigger quarantine
+    workflow (network isolate tag) and produce a signed evidence bundle including
+    source IP and user agent.
+  ready: true
+  status: todo
+  area_allowlist:
+  - tools/cloud/metasurf_watch.py
+  - tests/test_cloud_metasurf_watch.py
+  max_changed_lines: 500
+- id: IOT-005
+  title: 'EdgeVision Guard: Smart Camera Model Backdoor & Egress Auditor'
+  category: iot
+  description: Analyzes smart/edge camera firmware and on-device AI models to detect
+    backdoors/trigger patches via spectral signatures and activation clustering, builds
+    SBOMs with CVE mapping, emulates runtime to observe network egress and secret
+    usage, and outputs signed, court-ready evidence.
+  security_requirements:
+  - Run firmware and model analysis in a network-shaped, microsegmented sandbox; enforce
+    safe fuzzing with rate limits to avoid impacting production devices.
+  - Produce cryptographically sealed evidence bundles (PCAP, model stats, screenshots)
+    with chain-of-custody metadata and reproducible hashes.
+  - Respect privacy by masking PII in captured frames/logs and require explicit operator
+    consent before any live device interaction.
+  acceptance_tests:
+  - Extract SBOM from firmware image, correlate dependencies to CVEs, and flag hardcoded
+    credentials with recommended mitigations.
+  - Identify a backdoored object-detection model whose trigger patch causes systematic
+    misclassification; produce trigger saliency and confidence shift report.
+  - During emulated runtime, detect unauthorized RTSP/HTTPS egress to third-party
+    endpoints, block connections within the sandbox, and generate a signed incident
+    report.
+  ready: true
+  status: todo
+  area_allowlist:
+  - tools/iot/edgevision_guard.py
+  - tests/test_iot_edgevision_guard.py
   max_changed_lines: 500
