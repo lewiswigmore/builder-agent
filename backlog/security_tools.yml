@@ -775,7 +775,7 @@ security_tools:
   - Produce a Sigstore-signed attestation enumerating discovered apps, risk scores,
     and policy compliance results suitable for CI/CD gating.
   ready: true
-  status: todo
+  status: in_progress
   area_allowlist:
   - tools/cloud/shadow_oidc_app_hunter.py
   - tests/test_cloud_004.py
