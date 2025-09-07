@@ -346,9 +346,6 @@ class TelemetryStore:
             data["entropy_bins"][features["entropy_bin"]] += 1
             data["perplexity_bins"][features["perplexity_bin"]] += 1
             sh = features["simhash64"]
-            if data["last_simhash"] is not None:
-                # keep if distance significant to measure churn
-                pass
             data["last_simhash"] = sh
             data["simhashes"].append((sh, now))
             # update global cluster map for correlation
@@ -419,38 +416,39 @@ class Detector:
         # Rotating IP detection
         if snapshot["distinct_ip_prefix_10m"] >= 5:
             reasons.append("rotating_ip")
-            severity = "medium" if severity == "low" else severity
+            if severity == "low":
+                severity = "medium"
 
-        # Jailbreak detection
+        # Jailbreak detection: prefer challenge mode
         if features["jailbreak_score"] >= 1:
             reasons.append("jailbreak_tokens_detected")
-            severity = "medium"
+            if severity == "low":
+                severity = "medium"
             action_hint = "challenge"
 
-        # Model stealing heuristic: high entropy, uniform perplexity distribution, high simhash churn
+        # Model stealing heuristic: high entropy/perplexity distribution with simhash churn
         ent = features["entropy_noisy"]
         pbins = snapshot["perplexity_bins"]
         total_p = sum(pbins.values()) or 1
-        if total_p >= 10:
+        high_ratio = (pbins.get("high", 0) / total_p) if total_p else 0.0
+        if total_p >= 15:
             ratios = [pbins.get("low", 0) / total_p, pbins.get("medium", 0) / total_p, pbins.get("high", 0) / total_p]
             uniformity = 1.0 - sum(abs(r - 1 / 3) for r in ratios)  # closer to 1 is uniform
         else:
             uniformity = 0.0
         churn = snapshot["simhash_churn_10m"]
-        if ent > 3.5 and uniformity > 0.4 and churn > 16:
+        if (ent > 2.5 and churn > 8 and (uniformity > 0.3 or high_ratio > 0.5)) or (snapshot["window_60s"] > 40 and churn > 8):
             reasons.append("knockoffnets_like_distribution")
             severity = "high"
-            action_hint = "throttle"
+            if action_hint != "challenge":
+                action_hint = "throttle"
 
         # Cluster peer correlation: many fingerprints hitting same cluster
         if snapshot["cluster_peers"] >= 5:
             reasons.append("coordinated_campaign_cluster")
             severity = "high"
-            action_hint = "throttle"
-
-        # If multiple severe reasons, escalate to deny for safety
-        if severity == "high" and ("jailbreak_tokens_detected" in reasons and "burst_rate" in reasons):
-            action_hint = "deny"
+            if action_hint != "challenge":
+                action_hint = "throttle"
 
         return {
             "severity": severity,
@@ -465,6 +463,9 @@ class EnforcementEngine:
         self.lock = threading.Lock()
 
     def decide(self, score: Dict[str, Any]) -> str:
+        # Prefer challenge if jailbreak patterns detected
+        if "jailbreak_tokens_detected" in score.get("reasons", []):
+            return "challenge"
         sev = score["severity"]
         hint = score["action_hint"]
         if sev == "low":
@@ -502,7 +503,7 @@ class PolicyManager:
                 "burst_60s": 60,
                 "ip_rotate_threshold": 5,
                 "cluster_peer_threshold": 5,
-                "deny_on_combo": True,
+                "deny_on_combo": False,
             },
         }]
 
