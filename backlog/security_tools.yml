@@ -863,7 +863,7 @@ security_tools:
   - Export a signed evidence bundle containing CAN PCAP, UDS transcript, and manifest;
     verify signatures and hash chain correctness.
   ready: true
-  status: todo
+  status: in_progress
   area_allowlist:
   - tools/iot/canary_lab.py
   - tests/test_iot_004.py
