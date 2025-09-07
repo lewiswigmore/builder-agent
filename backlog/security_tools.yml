@@ -775,7 +775,7 @@ security_tools:
   - Produce a Sigstore-signed attestation enumerating discovered apps, risk scores,
     and policy compliance results suitable for CI/CD gating.
   ready: true
-  status: todo
+  status: needs_work
   area_allowlist:
   - tools/cloud/shadow_oidc_app_hunter.py
   - tests/test_cloud_004.py
@@ -960,4 +960,84 @@ security_tools:
   area_allowlist:
   - tools/threat_hunting/idp_attack_pattern_hunter.py
   - tests/test_hunt_003.py
+  max_changed_lines: 500
+- id: AI_SECURITY-006
+  title: 'RAGShield: Data Poisoning & Retrieval Integrity Auditor'
+  category: ai_security
+  description: Audits and protects RAG pipelines by scanning corpora and vector indexes
+    for poisoning/backdoors, enforcing signed-source retrieval, embedding drift detection,
+    citation hashing, and prompt-injection sanitization with safe tool execution.
+  security_requirements:
+  - Content provenance enforcement with per-document SHA-256, signed manifests (Sigstore/in-toto),
+    and transparency log inclusion checks.
+  - Sandboxed tool/connectors with strict allowlists; HTML/Markdown sanitization and
+    link/domain validation to neutralize prompt-injection-in-data.
+  - Embedding anomaly/poison detectors (spectral signatures, k-NN outlier scores,
+    watermark/backdoor trigger scans) with quarantine and signed attestations.
+  acceptance_tests:
+  - Inject a poisoned knowledge-base document containing a prompt-injection payload;
+    tool flags and quarantines it, and RAG responses exclude the tainted source.
+  - Simulate index tampering that shifts embedding clusters; tool detects drift, fails
+    the policy gate, and emits a signed attestation with diffed cluster metrics.
+  - RAG output cites a document whose stored hash mismatches current content; tool
+    blocks response, records incident with provenance details, and alerts.
+  ready: true
+  status: todo
+  area_allowlist:
+  - tools/ai_security/ragshield_auditor.py
+  - tests/test_ai_security_006.py
+  max_changed_lines: 500
+- id: VULN-003
+  title: 'HermeticBuild Watchdog: CI/CD Script Behavior Sandbox'
+  category: vulnerability
+  description: Sandboxes package build/install scripts (npm/pip/cargo) in hermetic
+    containers to detect malicious behaviors (network egress, credential access, supply-chain
+    implants) using syscall tracing, egress allowlists, and SBOM/hash diffing before
+    publish/deploy.
+  security_requirements:
+  - Deterministic, hermetic build sandbox with mount/user namespaces, read-only host
+    mounts, no network by default, and reproducible seeds.
+  - Behavior policy engine with seccomp/syscall profiles, file/secret access guards
+    (block ~/.ssh, cloud metadata, token files), and egress allowlists.
+  - Artifact integrity via SBOM (SPDX/CycloneDX) + hash diffing; signed attestations
+    on pass and automatic quarantine on policy violations.
+  acceptance_tests:
+  - A malicious npm postinstall script attempts to curl a remote miner binary; tool
+    blocks egress, captures syscall/network trace, and raises a high-severity violation.
+  - A Python setup.py tries to read AWS credentials from environment and ~/.aws; access
+    is denied, event is logged with file paths, and build is quarantined.
+  - A legitimate cargo build with registry access on an allowlisted domain completes,
+    produces an SBOM, and emits a Sigstore-signed attestation.
+  ready: true
+  status: todo
+  area_allowlist:
+  - tools/vulnerability/hermetic_build_watchdog.py
+  - tests/test_vuln_003.py
+  max_changed_lines: 500
+- id: CRYPTO-002
+  title: 'PQ-Migrate Auditor: Post-Quantum Readiness Scanner & TLS Hybrid Probe'
+  category: cryptography
+  description: Inventories cryptographic usage across code and infrastructure, probes
+    TLS endpoints for PQC/hybrid KEM support (e.g., Kyber/Dilithium variants), maps
+    migration blockers, and generates policy-as-code remediations and staged canary
+    rollouts.
+  security_requirements:
+  - Static and binary analysis to inventory crypto primitives, key sizes, and providers;
+    flag weak/legacy algorithms and non-compliant usages (e.g., SHA-1, RSA-1024).
+  - Active TLS probing for PQ/hybrid KEMs and signature algorithms; generate fallback-safe
+    configuration templates and verify fixes in subsequent scans.
+  - Change control with canary testing, HSM/KMS integration for key management, and
+    Sigstore-signed readiness reports stored in a transparency log.
+  acceptance_tests:
+  - Scan a repository using RSA-1024 and SHA-1; tool outputs prioritized remediation
+    with code locations and safer algorithm replacements.
+  - Probe a set of TLS servers lacking hybrid KEM; tool suggests configuration changes,
+    then confirms hybrid support after applying updates.
+  - Generate a signed (Sigstore) PQ-readiness report and verify inclusion in a transparency
+    log with tamper-evident metadata.
+  ready: true
+  status: todo
+  area_allowlist:
+  - tools/cryptography/pq_migrate_auditor.py
+  - tests/test_crypto_002.py
   max_changed_lines: 500
