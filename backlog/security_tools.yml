@@ -863,7 +863,7 @@ security_tools:
   - Export a signed evidence bundle containing CAN PCAP, UDS transcript, and manifest;
     verify signatures and hash chain correctness.
   ready: true
-  status: todo
+  status: needs_work
   area_allowlist:
   - tools/iot/canary_lab.py
   - tests/test_iot_004.py
@@ -1124,4 +1124,90 @@ security_tools:
   area_allowlist:
   - tools/iot/edgevision_guard.py
   - tests/test_iot_edgevision_guard.py
+  max_changed_lines: 500
+- id: AI_SECURITY-008
+  title: Deepfake Provenance & Watermark Sentinel
+  category: ai_security
+  description: Audits images, audio, and video for C2PA provenance, robust/invisible
+    watermarks, and model fingerprint signatures; verifies cryptographic attestations,
+    detects tampering/inconsistencies, and enforces policy gates to prevent deepfake-driven
+    fraud and misinformation.
+  security_requirements:
+  - Verify C2PA/manifests and embedded signatures against trusted roots with transparency
+    log inclusion where available; cryptographically sign audit outcomes.
+  - Process media without retaining biometric features or PII; default to on-device
+    or ephemeral analysis with secure deletion and configurable redaction of metadata.
+  - Provide policy-as-code enforcement (quarantine/block/flag) with egress allowlists
+    and reproducible, signed attestations for CI/CD and content publishing workflows.
+  acceptance_tests:
+  - Validate that a media asset with a valid C2PA manifest chains to a trusted root,
+    passes signature checks, and is marked 'verified' with a signed audit record.
+  - Detect and flag a video where watermark/fingerprint signals are inconsistent across
+    frames (possible splicing/tamper), producing a high-confidence alert without leaking
+    PII.
+  - Block outbound publishing of media lacking provenance that also triggers deepfake
+    heuristics (lip-sync mismatch, spectral artifacts) and emit a signed, timestamped
+    policy decision.
+  ready: true
+  status: todo
+  area_allowlist:
+  - tools/ai_security/deepfake_provenance_sentinel.py
+  - tests/test_ai_security_008.py
+  max_changed_lines: 500
+- id: NET-003
+  title: 'DNSCovert Hunter: Encrypted DNS Covert Channel Detector'
+  category: network
+  description: Detects covert data exfiltration over DoH/DoT/ODoH by modeling resolver
+    fingerprints, entropy and subdomain length distributions, flow timing, and JA3/JA4
+    deltas; correlates SNI/ECH metadata and CDN domain-fronting anomalies with enterprise
+    allowlists.
+  security_requirements:
+  - Operate passively without decrypting payloads; store only flow-level features
+    and anonymized host metadata to preserve privacy.
+  - Support strict resolver allowlists and baseline modeling to minimize false positives;
+    rate-limit alerts and provide explainable feature attributions.
+  - Sign flow summaries and model/version metadata; support reproducible detection
+    reports with integrity verification.
+  acceptance_tests:
+  - Identify sustained high-entropy DoH POST traffic to a non-approved resolver with
+    anomalous subdomain length distributions and raise a covert-channel alert.
+  - Baseline approved OS/browser DoH resolvers and confirm no alerts are generated
+    during normal browsing across diverse sites for 24 hours.
+  - Detect domain-fronted DoH via CDN where SNI/CDN host mismatches destination resolver
+    identity and JA3/JA4 fingerprints shift mid-session, producing a high-confidence
+    alert.
+  ready: true
+  status: todo
+  area_allowlist:
+  - tools/network/dnscovert_hunter.py
+  - tests/test_network_003.py
+  max_changed_lines: 500
+- id: FORENSICS-005
+  title: 'TrustAnchor Forensic Attestor: TPM/TEE Evidence Collector'
+  category: forensics
+  description: Performs low-impact acquisition and verification of TPM quotes (PCR/IMA),
+    measured boot logs, and TEE attestation reports (TDX/SEV-SNP/SGX/TrustZone); validates
+    vendor chains, correlates kernel/device state, and seals court-ready bundles with
+    timestamps.
+  security_requirements:
+  - Collect evidence read-only with freshness nonces to prevent replay; verify against
+    vendor attestation services and pinned certificate chains.
+  - Cryptographically seal artifacts (logs, quotes, reports) with hash chains and
+    RFC 3161 timestamps; maintain a signed chain-of-custody manifest.
+  - Vendor- and cloud-agnostic support with explicit capability detection; fail closed
+    on partial verification and surface verifiable reasons.
+  acceptance_tests:
+  - Acquire a TPM quote using a verifier-provided nonce; confirm PCR composite matches
+    reconstructed values from the measured boot event log and that the EK/AK chain
+    validates.
+  - Collect a TEE report (e.g., TDX/SEV-SNP) and verify the report with the appropriate
+    attestation service, failing the run on chain or policy mismatches.
+  - Produce a sealed evidence bundle (quotes, event logs, verifier policy, timestamps,
+    and signatures) that passes independent verification and integrity checks on a
+    separate system.
+  ready: true
+  status: todo
+  area_allowlist:
+  - tools/forensics/trustanchor_forensic_attestor.py
+  - tests/test_forensics_005.py
   max_changed_lines: 500
