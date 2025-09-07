@@ -78,7 +78,7 @@ class AnomalyGuard:
         with self._lock:
             now = time.time(); ws = now - self.window_seconds
             while self._events and self._events[0] < ws: self._events.popleft()
-            self._events.append(now); 
+            self._events.append(now)
             if len(self._events) >= self.threshold: self.paused = True
     def should_pause(self) -> bool:
         with self._lock: return self.paused
@@ -233,7 +233,7 @@ class SimulatedProvider(CloudProvider):
         with self._lock:
             for _, bd in self.state.get("buckets", {}).items():
                 objects = bd.get("objects", {}); remove_keys = []
-                for oid, meta in objects.items():
+                for oid, meta in list(objects.items()):
                     labels = meta.get("labels", {})
                     if labels.get(label_key) == label_value:
                         created_at = float(meta.get("created_at", meta.get("canary_created_at", now_ts - ttl - 1)))
@@ -269,16 +269,29 @@ class ProbeEngine:
         if not self.ratelimiter.allow(): raise RuntimeError("Rate limit exceeded; try again later")
     def _log(self, correlation_id: str, event: Dict[str, Any]) -> None:
         ev = dict(event); ev["time"] = int(utc_ts()); ev["correlation_id"] = correlation_id; self.logger.log(ev)
+    def _deny_and_pause(self, correlation_id: str, reason: str) -> None:
+        self._log(correlation_id, {"event": "guardrail_violation","reason": reason,"severity": "warning"})
+        self.guard.record_anomaly()
+        if self.guard.should_pause(): self._paused_reason = "guardrail violations threshold reached"
     def probe_egress_read(self, bucket: Bucket) -> Dict[str, Any]:
         self._check_rate_and_guard(); ok, reason = self._enforce_allowlists(bucket)
-        if not ok: raise PermissionError(reason)
+        correlation_id = str(uuid.uuid4())
+        if not ok:
+            self._deny_and_pause(correlation_id, reason)
+            raise PermissionError(reason)
         resource = {"bucket": bucket.name,"region": bucket.region,"labels": bucket.labels,"account_id": bucket.account_id,"project_id": bucket.project_id,"subscription_id": bucket.subscription_id,"provider": self.provider.name()}
         allow, why = self.policy.check("write_canary", resource)
-        if not allow: raise PermissionError(why)
-        correlation_id = str(uuid.uuid4())
+        if not allow or not self.provider.can_write_to_bucket(bucket, self.config):
+            why_msg = why if not allow else "provider_denied_write"
+            self._deny_and_pause(correlation_id, why_msg)
+            raise PermissionError(why_msg)
         canary = Canary.create(secret_key=self.secret_key, ttl_seconds=self.config.canary_ttl_seconds, scope={"bucket": bucket.name}, correlation_id=correlation_id)
         content = f"canary:{canary.id}:{canary.correlation_id}".encode("utf-8")
-        objmeta = self.provider.create_canary_object(bucket, canary, content)
+        try:
+            objmeta = self.provider.create_canary_object(bucket, canary, content)
+        except Exception as e:
+            self._log(correlation_id, {"event": "canary_object_error","bucket": bucket.name,"error": str(e),"severity": "error"})
+            raise
         self._log(correlation_id, {"event": "canary_object_created","bucket": bucket.name,"object_id": objmeta.object_id,"provider": self.provider.name(),"region": bucket.region})
         allow_read = self.provider.simulate_read_from_untrusted_network(bucket, objmeta)
         result: Dict[str, Any] = {"correlation_id": correlation_id,"provider": self.provider.name(),"bucket": bucket.name,"region": bucket.region,"object_id": objmeta.object_id,"egress_leak_detected": allow_read,"details": {},"remediation": []}
@@ -298,11 +311,15 @@ class ProbeEngine:
         return result
     def probe_presigned_cross_region(self, bucket: Bucket) -> Dict[str, Any]:
         self._check_rate_and_guard(); ok, reason = self._enforce_allowlists(bucket)
-        if not ok: raise PermissionError(reason)
+        correlation_id = str(uuid.uuid4())
+        if not ok:
+            self._deny_and_pause(correlation_id, reason)
+            raise PermissionError(reason)
         resource = {"bucket": bucket.name,"region": bucket.region,"labels": bucket.labels,"account_id": bucket.account_id,"project_id": bucket.project_id,"subscription_id": bucket.subscription_id,"provider": self.provider.name()}
         allow, why = self.policy.check("generate_presigned", resource)
-        if not allow: raise PermissionError(why)
-        correlation_id = str(uuid.uuid4())
+        if not allow:
+            self._deny_and_pause(correlation_id, why)
+            raise PermissionError(why)
         canary = Canary.create(secret_key=self.secret_key, ttl_seconds=self.config.canary_ttl_seconds, scope={"bucket": bucket.name}, correlation_id=correlation_id)
         objmeta = self.provider.create_canary_object(bucket, canary, content=b"")
         url = self.provider.generate_presigned_url(bucket, objmeta, expires_in=300)
@@ -310,10 +327,13 @@ class ProbeEngine:
         if self.config.regions_allowed and access_region not in self.config.regions_allowed: access_region = bucket.region
         res = {}
         if hasattr(self.provider, "access_presigned_url_from_region"):
-            res = getattr(self.provider, "access_presigned_url_from_region")(url, access_region)  # type: ignore
+            try:
+                res = getattr(self.provider, "access_presigned_url_from_region")(url, access_region)  # type: ignore
+            except Exception as e:
+                self._log(correlation_id, {"event": "presigned_access_error","error": str(e),"severity": "error"})
         logs = self.provider.get_audit_logs(correlation_id)
-        out = {"correlation_id": correlation_id,"provider": self.provider.name(),"bucket": bucket.name,"object_id": objmeta.object_id,"issued_region": bucket.region,"access_region": res.get("access_region", access_region),"cross_region": res.get("cross_region", False),"presigned_url": url if self.config.dry_run else "<redacted>","audit_events": logs}
-        self._log(correlation_id, {"event": "presigned_url_probe","issued_region": bucket.region,"access_region": access_region,"cross_region": out["cross_region"]})
+        out = {"correlation_id": correlation_id,"provider": self.provider.name(),"bucket": bucket.name,"object_id": objmeta.object_id,"issued_region": bucket.region,"access_region": res.get("access_region", access_region),"cross_region": res.get("cross_region", access_region != bucket.region),"presigned_url": url if self.config.dry_run else "<redacted>","audit_events": logs}
+        self._log(correlation_id, {"event": "presigned_url_probe","issued_region": bucket.region,"access_region": out["access_region"],"cross_region": out["cross_region"]})
         return out
     def cleanup_canaries(self) -> Dict[str, Any]:
         self._check_rate_and_guard()
@@ -366,14 +386,18 @@ def cli():
         if args.bucket: targets = [b for b in targets if b.name == args.bucket]
         for b in targets:
             try: results.append(engine.probe_egress_read(b))
-            except Exception as e: results.append({"bucket": b.name, "error": str(e)})
+            except Exception as e:
+                cid = str(uuid.uuid4()); logger.log({"time": int(utc_ts()), "correlation_id": cid, "event": "probe_egress_error", "bucket": b.name, "error": str(e)})
+                results.append({"bucket": b.name, "error": str(e)})
         print(json.dumps(results, indent=2)); save_simulated_state(cfg.state_path, state); return
     if args.cmd == "probe-presigned":
         results = []; targets = find_canary_buckets(provider, cfg)
         if args.bucket: targets = [b for b in targets if b.name == args.bucket]
         for b in targets:
             try: results.append(engine.probe_presigned_cross_region(b))
-            except Exception as e: results.append({"bucket": b.name, "error": str(e)})
+            except Exception as e:
+                cid = str(uuid.uuid4()); logger.log({"time": int(utc_ts()), "correlation_id": cid, "event": "probe_presigned_error", "bucket": b.name, "error": str(e)})
+                results.append({"bucket": b.name, "error": str(e)})
         print(json.dumps(results, indent=2)); save_simulated_state(cfg.state_path, state); return
     if args.cmd == "cleanup":
         out = engine.cleanup_canaries(); print(json.dumps(out, indent=2)); save_simulated_state(cfg.state_path, state); return
