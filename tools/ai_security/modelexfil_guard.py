@@ -424,7 +424,9 @@ class Detector:
             reasons.append("jailbreak_tokens_detected")
             if severity == "low":
                 severity = "medium"
-            action_hint = "challenge"
+            # Keep challenge preference but may be overridden by severe throttle
+            if action_hint != "throttle":
+                action_hint = "challenge"
 
         # Model stealing heuristic: high entropy/perplexity distribution with simhash churn
         ent = features["entropy_noisy"]
@@ -450,6 +452,12 @@ class Detector:
             if action_hint != "challenge":
                 action_hint = "throttle"
 
+        # Extreme conditions may warrant deny
+        if snapshot["window_60s"] > 200 or snapshot["distinct_ip_prefix_10m"] > 20:
+            reasons.append("extreme_abuse")
+            severity = "high"
+            action_hint = "deny"
+
         return {
             "severity": severity,
             "reasons": reasons,
@@ -463,7 +471,11 @@ class EnforcementEngine:
         self.lock = threading.Lock()
 
     def decide(self, score: Dict[str, Any]) -> str:
-        # Prefer challenge if jailbreak patterns detected
+        # If high severity burst, throttle or deny takes precedence.
+        if score.get("severity") == "high":
+            if score.get("action_hint") in ("throttle", "deny"):
+                return score["action_hint"]
+        # Prefer challenge if jailbreak patterns detected and not extreme
         if "jailbreak_tokens_detected" in score.get("reasons", []):
             return "challenge"
         sev = score["severity"]
@@ -480,11 +492,12 @@ class EnforcementEngine:
         # Canary/watermark style challenge: request client to echo a nonce in next request header or prompt.
         nonce = base64.urlsafe_b64encode(os.urandom(18)).decode("ascii")
         watermark = f"canary::{nonce}::wm"
+        now = datetime.datetime.utcnow().replace(tzinfo=datetime.timezone.utc)
         with self.lock:
             self.challenge_cache[fingerprint] = {
                 "nonce": nonce,
-                "issued_at": _utcnow_iso(),
-                "expires_at": _utcnow_iso(),
+                "issued_at": now.isoformat(),
+                "expires_at": (now + datetime.timedelta(minutes=5)).isoformat(),
             }
         return {
             "challenge_type": "watermark_echo",
@@ -570,8 +583,11 @@ class ModelExfilGuard:
             # Score
             score = self.detector.score(features, snapshot, client_meta or {})
             action = self.enforcer.decide(score)
+            jailbreak_detected = "jailbreak_tokens_detected" in score.get("reasons", [])
             challenge = None
-            if action == "challenge":
+            # Engage challenge both when action is challenge OR jailbreak patterns seen
+            # even if decision is throttle/deny, so downstream can present challenge while throttling.
+            if action == "challenge" or jailbreak_detected:
                 challenge = self.enforcer.generate_challenge(fp)
             # Enforcement never alters model weights or prompts. Throttling/deny decisions are returned to caller.
             # Build privacy-preserving audit entry
@@ -604,7 +620,7 @@ class ModelExfilGuard:
             }
             audit_record = self.audit.append(entry)
             response = {
-                "decision": action,
+                "decision": action if not self.dry_run else "allow",
                 "severity": score["severity"],
                 "reasons": score["reasons"],
                 "challenge": challenge,
