@@ -7,7 +7,7 @@ import threading
 import time
 import urllib.parse
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Any, Tuple, Callable
+from typing import Dict, List, Optional, Any, Tuple
 
 """
 SaaS Connector Egress Auditor
@@ -349,11 +349,8 @@ class SlackClientStub:
         app = self.apps.get(app_id)
         if not app:
             return False
+        # Revoke current token in vault; do not add to revoked_tokens to avoid blocking freshly rotated tokens
         self.vault.revoke(app.token_key)
-        # track token to block replay
-        rec = self.vault.info(app.token_key)
-        if rec:
-            self.revoked_tokens.add(rec.value)
         return True
 
     def rotate_token(self, app_id: str, new_token: str, ttl_seconds: int = 3600) -> Tuple[Optional[str], str]:
@@ -365,6 +362,7 @@ class SlackClientStub:
         old_rec = self.vault.info(app.token_key)
         old = old_rec.value if old_rec else None
         if old:
+            # mark old token as revoked/blocked for replay attempts
             self.revoked_tokens.add(old)
         self.vault.put(app.token_key, new_token, ttl_seconds=ttl_seconds, metadata={"workspace": app.workspace, "app_id": app_id})
         return old, new_token
@@ -379,8 +377,8 @@ class SlackClientStub:
             return False
         # also reject expired or unknown tokens
         # search vault for token match
-        for k in list(self.apps.values()):
-            rec = self.vault.info(k.token_key)
+        for app in list(self.apps.values()):
+            rec = self.vault.info(app.token_key)
             if rec and rec.value == token and not rec.revoked and rec.expires_at > utc_now():
                 return True
         return False
@@ -440,7 +438,6 @@ class SlackAuditor:
             scopes = self.slack.get_oauth_scopes(app_id)
             # Detect mis-scope: e.g., files:read across all workspaces
             mis_scope = "files:read" in scopes
-            severity = "high" if mis_scope else "medium"
             summary = f"Honey document {file_id} accessed by app {app_id} in workspace {event.get('workspace')}"
             details = {
                 "access_path": event.get("access_path"),
@@ -543,8 +540,7 @@ class TokenRotator:
 
     def rotate_and_revoke(self, app_id: str, new_token: str, ttl_seconds: int = 900) -> Dict[str, Any]:
         old, new = self.slack.rotate_token(app_id, new_token=new_token, ttl_seconds=ttl_seconds)
-        if old:
-            self.slack.revoke_token(app_id)
+        # Do not revoke current app token here; old token is already blocked via revoked_tokens
         record = {"app_id": app_id, "old_masked": masked(old or ""), "new_masked": masked(new or ""), "ttl": ttl_seconds}
         self.audit_log.append({"type": "token_rotation", "record": record})
         return record
@@ -614,15 +610,6 @@ class SaaSConnectorEgressAuditor:
     # ---------- Token rotation ----------
     def rotate_and_validate_tokens(self, app_id: str, new_token: str, ttl_seconds: int = 600) -> Dict[str, Any]:
         rotation = self.token_rotator.rotate_and_revoke(app_id, new_token=new_token, ttl_seconds=ttl_seconds)
-        old_rec = self.vault.info(f"slack_token_{app_id}")
-        old_token = None
-        if old_rec:
-            # We already rotated; need to retrieve previous token from rotation record masked; not available.
-            # For validation, simulate replay using the revoked set: pick a token from revoked set for this app if available.
-            # For deterministic behavior, we require caller to provide old token; as a fallback, replay against masked won't work.
-            pass
-        # In our simple flow, we can reconstruct old token from the SlackClientStub revoked_tokens set only if provided.
-        # Expose a helper to validate a specific token:
         return rotation
 
     def validate_old_token_blocked(self, old_token: str) -> Dict[str, Any]:
