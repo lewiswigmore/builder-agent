@@ -926,7 +926,7 @@ security_tools:
     stale grants, and validates no residual access using replay attempts logged as
     blocked.
   ready: true
-  status: todo
+  status: in_progress
   area_allowlist:
   - tools/cloud/saas_connector_egress_auditor.py
   - tests/test_cloud_006.py
