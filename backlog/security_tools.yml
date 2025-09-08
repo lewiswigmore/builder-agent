@@ -894,7 +894,7 @@ security_tools:
     to enforce, the system halts on threshold breach and rolls back to the last verified
     checkpoint.
   ready: true
-  status: todo
+  status: in_progress
   area_allowlist:
   - tools/ai_security/train_sentinel.py
   - tests/test_aisec_005.py
