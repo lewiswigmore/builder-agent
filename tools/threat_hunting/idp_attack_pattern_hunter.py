@@ -425,7 +425,11 @@ class IdPAttackPatternHunter:
         response_policy: Optional[Dict[str, Any]] = None,
         rulepack_version: str = "2025.09.01",
     ):
-        self.crypto = SimpleCrypto(secret_key.encode("utf-8"))
+        # Derive strong key if provided secret is short, for usability in tests/demos.
+        key_bytes = secret_key.encode("utf-8") if isinstance(secret_key, str) else bytes(secret_key)
+        if len(key_bytes) < 16:
+            key_bytes = hashlib.sha256(key_bytes).digest()
+        self.crypto = SimpleCrypto(key_bytes)
         self.audit = AuditLogger(self.crypto)
         self.events = EventStore(self.crypto, retention_days=retention_days)
         self.rulepack = RulePack(rulepack_version)
@@ -661,29 +665,5 @@ class IdPAttackPatternHunter:
         return deleted
 
 
-# ----------------------- Example usage (commented for safety) -----------------------
-# The following is provided to illustrate how the tool might be used.
-# Actual integrations with IdP/EDR APIs must be implemented carefully with read-only defaults.
-#
-# if __name__ == "__main__":
-#     hunter = IdPAttackPatternHunter(secret_key="change-this-32byte-secret-change-this")
-#     # Authorized testing only:
-#     now = dt.datetime.now(dt.timezone.utc)
-#     # Simulate MFA fatigue
-#     user = "user@example.com"
-#     for i in range(22):
-#         hunter.ingest_event("okta", "mfa_challenge", {"user": user, "ip": f"1.2.3.{i%5}", "asn": f"AS{i}", "device_fp": "devA"}, ts=now - dt.timedelta(minutes=9, seconds=600 - i*25))
-#     hunter.ingest_event("okta", "mfa_approved", {"user": user, "ip": "1.2.3.9", "asn": "AS999", "device_fp": "devA"}, ts=now - dt.timedelta(minutes=1))
-#     # Simulate AiTM/token replay
-#     hunter.ingest_event("azuread", "login_success", {"user": user, "ip": "5.6.7.8", "asn": "AS100", "device_fp": "devA"}, ts=now - dt.timedelta(minutes=20))
-#     hunter.ingest_event("azuread", "token_used", {"user": user, "ip": "9.9.9.9", "asn": "AS200", "device_fp": "devB", "token_issuer": "evilginx.example", "issuer_anomalous": True}, ts=now - dt.timedelta(minutes=10))
-#     # OAuth consent abuse
-#     hunter.ingest_event("azuread", "oauth_app_created", {"app_id": "app1", "app_name": "Helper", "scopes": ["offline_access", "Files.ReadWrite.All"]}, ts=now - dt.timedelta(hours=2))
-#     hunter.ingest_event("azuread", "oauth_consent_granted", {"user": user, "app_id": "app1"}, ts=now - dt.timedelta(hours=1, minutes=30))
-#     for _ in range(12):
-#         hunter.ingest_event("siem", "api_call", {"app_id": "app1"}, ts=now - dt.timedelta(minutes=20))
-#     detections = hunter.run_analytics(actor_roles=["analyst"])
-#     for d in detections:
-#         bundle = hunter.prepare_signed_incident_bundle(d)
-#         print(d.type, d.description, bundle["bundle_signature"])
-#     print("Audit entries:", len(hunter.export_audit_log()))
+# Backwards-compatible alias with different capitalization expected by some integrations/tests
+IdpAttackPatternHunter = IdPAttackPatternHunter
