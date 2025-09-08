@@ -156,7 +156,9 @@ class _TelemetrySink:
         self._lock = threading.Lock()
         self._file = None
         if config.telemetry_file:
-            os.makedirs(os.path.dirname(config.telemetry_file), exist_ok=True)
+            d = os.path.dirname(config.telemetry_file)
+            if d:
+                os.makedirs(d, exist_ok=True)
             self._file = open(config.telemetry_file, "a", encoding="utf-8")
 
     def rotate_keys(self):
@@ -245,7 +247,7 @@ def _sha256_file(path: str) -> str:
 
 
 def _kmeans2(X: List[List[float]], max_iter: int = 30) -> Tuple[List[int], List[List[float]]]:
-    import random
+    import random  # noqa: F401
     if len(X) < 2:
         return [0] * len(X), [X[0] if X else [0.0], X[0] if X else [0.0]]
     n = len(X)
@@ -308,8 +310,11 @@ class TrainSentinel:
         # Determinism settings
         if self.config.deterministic:
             try:
-                import numpy as np
-                np.random.seed(self.config.seed)
+                import numpy as np  # type: ignore
+                try:
+                    np.random.seed(self.config.seed)  # type: ignore[attr-defined]
+                except Exception:
+                    pass
             except Exception:
                 pass
             os.environ["PYTHONHASHSEED"] = str(self.config.seed)
@@ -458,7 +463,7 @@ class TrainSentinel:
         Returns a callable to detach hooks. This avoids persisting raw inputs; only activations and grad norms are processed.
         """
         try:
-            import torch
+            import torch  # noqa: F401
             import torch.nn as nn
         except Exception as e:
             logger.error(f"PyTorch not available: {e}")
@@ -473,31 +478,41 @@ class TrainSentinel:
             # Only record for leaf layers (Linear/Conv) to reduce volume
             if not isinstance(module, (nn.Linear, nn.Conv1d, nn.Conv2d, nn.Conv3d)):
                 return
-            with torch.no_grad():
-                try:
-                    act = out
-                    if isinstance(act, (list, tuple)):
-                        act = act[0]
-                    act = act.detach()
-                    # Per-sample mean pooled vector to minimize leakage
-                    while act.dim() > 2:
-                        act = act.mean(dim=-1)
-                    if act.dim() == 2:
-                        # take first N samples to cap memory
-                        N = min(32, act.size(0))
-                        vecs = act[:N].cpu().numpy()
-                        # convert to python lists
-                        vecs = vecs.tolist()
-                        with lock:
-                            activation_buffer.extend(vecs)
-                            if len(activation_buffer) > 64:
-                                activation_buffer[:] = activation_buffer[-64:]
-                except Exception:
-                    pass
+            try:
+                act = out
+                if isinstance(act, (list, tuple)):
+                    act = act[0]
+                # Per-sample mean pooled vector to minimize leakage
+                # Avoid storing tensors; convert minimal numeric summaries
+                while hasattr(act, "dim") and act.dim() > 2:
+                    act = act.mean(dim=-1)
+                if hasattr(act, "dim") and act.dim() == 2:
+                    N = int(min(32, act.size(0)))
+                    # We further mean-reduce features to cap dimension (safety)
+                    try:
+                        # Try to down-project to 16 dims by chunked averaging
+                        F = int(act.size(1))
+                        if F > 16:
+                            step = max(1, F // 16)
+                            act = act[:, : step * 16]
+                            act = act.reshape(N, 16, step).mean(dim=-1)
+                    except Exception:
+                        pass
+                    vecs = act[:N].detach().cpu().tolist()
+                    with lock:
+                        activation_buffer.extend(vecs)
+                        if len(activation_buffer) > 64:
+                            activation_buffer[:] = activation_buffer[-64:]
+            except Exception:
+                # Do not let hook failures affect training
+                pass
 
         for m in model.modules():
             if len(list(m.children())) == 0:
-                handles.append(m.register_forward_hook(_hook))
+                try:
+                    handles.append(m.register_forward_hook(_hook))
+                except Exception:
+                    pass
 
         # Wrap optimizer.step to capture grad norm after backward
         original_step = None
@@ -510,23 +525,37 @@ class TrainSentinel:
                 try:
                     total = 0.0
                     for p in model.parameters():
-                        if p.grad is not None:
-                            g = p.grad.detach()
-                            total += float(g.norm().item() ** 2)
+                        if getattr(p, "grad", None) is not None:
+                            g = p.grad
+                            try:
+                                total += float(g.detach().norm().item() ** 2)
+                            except Exception:
+                                pass
                     gn = total ** 0.5
                 except Exception:
                     pass
                 # Snapshot activations
                 with lock:
-                    acts = [v[:] for v in activation_buffer]
+                    acts = [list(v) for v in activation_buffer]
                     activation_buffer.clear()
+                # Safe device capture
+                device_str = "unknown"
+                try:
+                    params = list(model.parameters())
+                    if params:
+                        device_str = str(params[0].device)
+                except Exception:
+                    pass
                 bid = f"{int(time.time()*1000)}-{secrets.token_hex(4)}"
-                self.inspect_batch(
-                    batch_id=bid,
-                    metadata={"framework": framework_name, "device": str(next(model.parameters()).device) if any(True for _ in model.parameters()) else "unknown"},
-                    activations=acts,
-                    grad_norm=gn,
-                )
+                try:
+                    self.inspect_batch(
+                        batch_id=bid,
+                        metadata={"framework": framework_name, "device": device_str},
+                        activations=acts,
+                        grad_norm=gn,
+                    )
+                except Exception as e:
+                    logger.error(f"inspect_batch error: {e}")
                 return original_step(*args, **kwargs)
             optimizer.step = wrapped_step
 
@@ -546,8 +575,7 @@ class TrainSentinel:
         Returns a Keras Callback capturing activations and grad norms without exposing raw inputs.
         """
         try:
-            import tensorflow as tf
-            import numpy as np
+            import tensorflow as tf  # type: ignore
         except Exception as e:
             logger.error(f"TensorFlow not available: {e}")
             return None
@@ -557,10 +585,8 @@ class TrainSentinel:
         class SentinelCallback(tf.keras.callbacks.Callback):
             def on_train_batch_end(self, batch, logs=None):
                 logs = logs or {}
-                # Activations are not trivial to capture without model introspection; as a proxy, use last layer outputs mean
                 acts = []
                 try:
-                    # If model exposes last_batch_outputs via a custom training step, use it; else empty
                     out = getattr(self.model, "last_batch_outputs", None)
                     if out is not None:
                         o = out
@@ -574,7 +600,6 @@ class TrainSentinel:
                         acts = o.numpy().tolist()
                 except Exception:
                     acts = []
-                # Grad norm not directly available; proxy using gradient tape is heavy.
                 bid = f"tf-{int(time.time()*1000)}-{secrets.token_hex(4)}"
                 sentinel.inspect_batch(batch_id=bid, metadata={"framework": "tensorflow"}, activations=acts, grad_norm=None)
 
@@ -588,7 +613,7 @@ class TrainSentinel:
         def wrapped(*args, **kwargs):
             out = step_fn(*args, **kwargs)
             try:
-                state, metrics = out
+                _, metrics = out
             except Exception:
                 return out
             activations = metrics.get("activations", [])
