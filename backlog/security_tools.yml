@@ -956,7 +956,7 @@ security_tools:
     user; the hunter flags consent abuse, correlates unusual API calls, and recommends
     admin review with one-click quarantine (if enabled).
   ready: true
-  status: todo
+  status: needs_work
   area_allowlist:
   - tools/threat_hunting/idp_attack_pattern_hunter.py
   - tests/test_hunt_003.py
@@ -1297,4 +1297,90 @@ security_tools:
   area_allowlist:
   - tools/forensics/lambdatrace_snapshotter.py
   - tests/test_forensics_006.py
+  max_changed_lines: 500
+- id: AI_SECURITY-010
+  title: 'PromptLeak Trap: LLM Memory Honeypot & Egress Auditor'
+  category: ai_security
+  description: Deploys decoy secrets and canary PII inside LLM context/tool memory,
+    enforces signed-source retrieval and egress allowlists for tools/plugins, detects
+    prompt-injection-led data exfiltration and memory scraping, and emits signed,
+    forensically sound alerts with reproducible attestations.
+  security_requirements:
+  - All tool/plugin executions must run in a sandbox with default-deny network egress
+    and capability auditing, producing immutable execution transcripts.
+  - RAG sources and documents must be signature-verified (Sigstore/in-toto) and hash-pinned
+    before retrieval or indexing.
+  - Canary secrets/PII are unique per deployment, non-sensitive, and generate tamper-evident,
+    signed alerts upon access or attempted exfiltration.
+  acceptance_tests:
+  - When a canary token placed in the LLM context is accessed by a plugin, the system
+    blocks outbound requests not on the allowlist and produces a signed alert with
+    tool execution transcript.
+  - A query that attempts to use an unsigned or hash-mismatched RAG document is denied,
+    with a policy violation recorded and a detailed attestation emitted.
+  - A prompt-injection that instructs a tool to fetch an external URL outside the
+    allowlist is prevented; the attempt is logged with a redaction summary and evidence
+    bundle.
+  ready: true
+  status: todo
+  area_allowlist:
+  - tools/ai_security/promptleak_trap.py
+  - tests/test_ai_security_010.py
+  max_changed_lines: 500
+- id: CLOUD-009
+  title: 'KeyTrace Guardian: Cross-Cloud KMS Misuse & Envelope Abuse Auditor'
+  category: cloud
+  description: Audits AWS/Azure/GCP KMS usage for misuse and data exfil via decrypt/encrypt
+    patterns, validates key policies and cross-account grants, plants signed canary
+    ciphertexts across regions, correlates audit logs for anomalous decrypts, and
+    recommends least-privilege remediations with signed findings.
+  security_requirements:
+  - Use least-privilege, read-only roles; write only to dedicated evidence stores
+    encrypted with customer-managed keys and immutable logging.
+  - Issue per-region, per-account signed canary ciphertexts that contain no real data
+    and are rotated regularly; verify usage via provider audit logs.
+  - Enforce policy-as-code checks for key policies, grants, rotation, and alias hygiene;
+    detect wildcard principals and unintended cross-account access.
+  acceptance_tests:
+  - A KMS key policy granting a wildcard principal is flagged with a high-severity
+    finding and a proposed least-privilege remediation plan.
+  - A decrypt API call on a canary ciphertext in CloudTrail/Azure Activity Log/GCP
+    Audit Log generates an immediate signed alert with the calling principal and source
+    IP.
+  - A non-rotating KMS key with mismatched alias across regions is detected and reported
+    with drift details and remediation steps.
+  ready: true
+  status: todo
+  area_allowlist:
+  - tools/cloud/keytrace_guardian.py
+  - tests/test_cloud_009.py
+  max_changed_lines: 500
+- id: THREAT_HUNTING-004
+  title: 'ShadowPipeline Hunter: Client-Side Supply Chain Beacon Detector'
+  category: threat_hunting
+  description: Detects compromised third-party web scripts and client-side supply-chain
+    beacons using headless browser instrumentation, CSP/SRI validation, JS AST diffing,
+    and CDN path typosquat detection; deploys canary DOM fields to bait skimmers and
+    emits sealed evidence bundles (HTML snapshots, PCAP, console logs).
+  security_requirements:
+  - Headless crawlers run in isolated sandboxes with constrained network egress; all
+    traffic is captured and hashed with timestamps for integrity.
+  - Validate SRI/CSP policies, enforcing strong hashes and allow-listed script sources;
+    block execution of unsigned or hash-mismatched scripts in test harnesses.
+  - Produce signed, tamper-evident evidence bundles containing DOM snapshots, request/response
+    metadata, and console/network logs.
+  acceptance_tests:
+  - A simulated Magecart-style skimmer exfiltrating a canary form field is detected;
+    the alert includes PCAP, DOM snapshot of the injected script, and a signed evidence
+    manifest.
+  - A third-party script with an SRI hash mismatch is blocked in the analysis environment
+    and raises a policy violation with the expected vs. observed hash.
+  - A typosquatted CDN URL (e.g., slight domain variation) is identified via fuzzy
+    matching and reputation feeds, generating a medium-severity finding with suggested
+    blocklist updates.
+  ready: true
+  status: todo
+  area_allowlist:
+  - tools/threat_hunting/shadowpipeline_hunter.py
+  - tests/test_threat_hunting_004.py
   max_changed_lines: 500
