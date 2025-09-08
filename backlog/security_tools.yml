@@ -982,7 +982,7 @@ security_tools:
   - RAG output cites a document whose stored hash mismatches current content; tool
     blocks response, records incident with provenance details, and alerts.
   ready: true
-  status: todo
+  status: in_progress
   area_allowlist:
   - tools/ai_security/ragshield_auditor.py
   - tests/test_ai_security_006.py
