@@ -956,7 +956,7 @@ security_tools:
     user; the hunter flags consent abuse, correlates unusual API calls, and recommends
     admin review with one-click quarantine (if enabled).
   ready: true
-  status: todo
+  status: in_progress
   area_allowlist:
   - tools/threat_hunting/idp_attack_pattern_hunter.py
   - tests/test_hunt_003.py
