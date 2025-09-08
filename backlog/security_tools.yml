@@ -894,7 +894,7 @@ security_tools:
     to enforce, the system halts on threshold breach and rolls back to the last verified
     checkpoint.
   ready: true
-  status: todo
+  status: needs_work
   area_allowlist:
   - tools/ai_security/train_sentinel.py
   - tests/test_aisec_005.py
@@ -1210,4 +1210,91 @@ security_tools:
   area_allowlist:
   - tools/forensics/trustanchor_forensic_attestor.py
   - tests/test_forensics_005.py
+  max_changed_lines: 500
+- id: AI_SECURITY-009
+  title: 'SynthGuard: Synthetic Data Leakage & Integrity Auditor'
+  category: ai_security
+  description: Audits synthetic data pipelines and generators for privacy leakage,
+    provenance integrity, and watermark resilience by orchestrating canary seeding,
+    membership-inference/model-inversion probes, dataset/model signature verification,
+    and policy-gated releases with signed attestations.
+  security_requirements:
+  - Enforce signed provenance attestations (Sigstore/in-toto) for datasets, models,
+    and generator plugins; block execution on verification failure.
+  - Run leakage probes (canary prompts, membership inference, inversion) in sandboxed
+    workers with strict rate/resource limits and egress allowlists.
+  - Apply PII/PHI scanners and differential-privacy leakage thresholds to outputs;
+    quarantine generators exceeding risk scores and emit signed audit reports.
+  acceptance_tests:
+  - "Seed unique canary records into a training set, generate N=10k samples, and detect\
+    \ at least one canary leak with confidence \u2265 0.95; block release and produce\
+    \ a signed incident bundle."
+  - Verify dataset/model signatures against Rekor transparency log; on tampered artifact,
+    prevent pipeline execution and record policy violation with reproducible evidence.
+  - Run membership-inference suite on a target model and produce a quantitative leakage
+    risk score; if score > policy threshold, quarantine the model and require manual
+    approval.
+  ready: true
+  status: todo
+  area_allowlist:
+  - tools/ai_security/synthguard.py
+  - tests/test_ai_security_009.py
+  max_changed_lines: 500
+- id: CLOUD-008
+  title: 'KubeIdentity Tripwire: SA Token Abuse & Lateral Movement Auditor'
+  category: cloud
+  description: Continuously audits Kubernetes service account token posture and workload
+    identity boundaries; deploys scoped honey service accounts and projected tokens,
+    correlates API/audit logs to detect replay outside the cluster, flags overbroad
+    RBAC/audiences, and auto-revokes abused credentials with signed, forensically
+    sound alerts.
+  security_requirements:
+  - Use least-privileged, read-only RBAC for posture discovery; honey tokens are time-bound,
+    namespace-scoped, and rotation-enabled.
+  - Cryptographically sign honey credentials and alerts; automate revocation and evidence
+    sealing upon detected misuse.
+  - Respect network egress allowlists; no secret exfiltration beyond designated evidence
+    sink with encryption-at-rest and access controls.
+  acceptance_tests:
+  - Create a honey service account with projected token; simulate token replay from
+    an external IP and detect via API/audit log correlation, triggering auto-revocation
+    and a signed alert within 60 seconds.
+  - Scan cluster and report pods with automountServiceAccountToken=true in restricted
+    namespaces, providing least-privilege RBAC and automount remediation diffs.
+  - Identify projected token audiences that are overly broad or missing; recommend
+    constrained audiences and validate fix through re-scan.
+  ready: true
+  status: todo
+  area_allowlist:
+  - tools/cloud/kubeidentity_tripwire.py
+  - tests/test_cloud_008.py
+  max_changed_lines: 500
+- id: FORENSICS-006
+  title: 'LambdaTrace: Serverless Ephemeral Forensic Snapshotter'
+  category: forensics
+  description: Performs low-impact, on-invocation capture of ephemeral serverless
+    evidence (env/process metadata, tmpfs artifacts, eBPF-lite syscall summaries,
+    and network flow headers) across AWS/Azure/GCP; seals bundles with timestamps,
+    correlates with provider logs, and preserves chain-of-custody for incident response.
+  security_requirements:
+  - Minimize performance impact via configurable sampling, cold-start-only hooks,
+    and rate-limited evidence capture with backpressure controls.
+  - Seal evidence bundles using cryptographic timestamps and signatures; store in
+    WORM-capable, access-controlled archives with transparent integrity logs.
+  - Apply PII-safe redaction policies and scope captures to metadata and non-content
+    payload summaries to avoid data privacy violations.
+  acceptance_tests:
+  - "Invoke a test function under load (concurrency \u2265 50); capture env variables\
+    \ (filtered), tmpfs summaries, stdout/stderr, and network 5-tuples; generate a\
+    \ sealed evidence bundle with verifiable signatures and timestamps."
+  - Validate that bundle integrity checks (hash/signature) pass after transfer to
+    archival storage; any tampering must be detected and reported.
+  - "Measure end-to-end overhead: median p95 latency increase \u2264 5% and error\
+    \ rate increase \u2264 0.1% with capture enabled under defined workload; auto-throttle\
+    \ engages when thresholds are exceeded."
+  ready: true
+  status: todo
+  area_allowlist:
+  - tools/forensics/lambdatrace_snapshotter.py
+  - tests/test_forensics_006.py
   max_changed_lines: 500
