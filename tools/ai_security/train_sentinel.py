@@ -159,7 +159,18 @@ class _TelemetrySink:
             d = os.path.dirname(config.telemetry_file)
             if d:
                 os.makedirs(d, exist_ok=True)
-            self._file = open(config.telemetry_file, "a", encoding="utf-8")
+            # Use restrictive file permissions
+            try:
+                file_exists = os.path.exists(config.telemetry_file)
+                self._file = open(config.telemetry_file, "a", encoding="utf-8")
+                if not file_exists:
+                    try:
+                        os.chmod(config.telemetry_file, 0o600)
+                    except Exception:
+                        pass
+            except Exception as e:
+                logger.error(f"Failed to open telemetry file: {e}")
+                self._file = None
 
     def rotate_keys(self):
         with self._lock:
@@ -185,15 +196,21 @@ class _TelemetrySink:
         blob = self._encryptor.encrypt(plaintext, aad=aad)
         record = json.dumps({"a": "1", "e": blob}, sort_keys=True)
         if self._file:
-            self._file.write(record + "\n")
-            self._file.flush()
+            try:
+                self._file.write(record + "\n")
+                self._file.flush()
+            except Exception as e:
+                logger.error(f"Telemetry write failed: {e}")
         else:
             # If no file, still log length and key id without leaking plaintext
             logger.debug(f"Encrypted telemetry len={len(record)} kid={self._encryptor.key_id}")
 
     def close(self):
         if self._file:
-            self._file.close()
+            try:
+                self._file.close()
+            except Exception:
+                pass
 
 
 class _Attestor:
@@ -341,10 +358,13 @@ class TrainSentinel:
             return
         digest = _sha256_file(path)
         att = self._attestor.attest({"type": "checkpoint", "path": os.path.abspath(path), "sha256": digest})
-        os.makedirs(self.config.provenance_dir, exist_ok=True)
-        out = os.path.join(self.config.provenance_dir, f"checkpoint-{int(time.time())}.json")
-        with open(out, "w", encoding="utf-8") as f:
-            json.dump(att, f, sort_keys=True)
+        try:
+            os.makedirs(self.config.provenance_dir, exist_ok=True)
+            out = os.path.join(self.config.provenance_dir, f"checkpoint-{int(time.time())}.json")
+            with open(out, "w", encoding="utf-8") as f:
+                json.dump(att, f, sort_keys=True)
+        except Exception as e:
+            logger.error(f"Failed to write checkpoint attestation: {e}")
         if verified_ok:
             self._last_safe_checkpoint = path
         self._telemetry.emit({"event": "checkpoint_recorded", "path": path, "sha256": digest})
@@ -372,12 +392,17 @@ class TrainSentinel:
         self._hold_safe = True
         self._telemetry.emit({"event": "hold_safe_enter", "reason": reason, "details": details})
         att = self._attestor.attest({"type": "hold_safe", "reason": reason, "details": details})
-        os.makedirs(self.config.provenance_dir, exist_ok=True)
-        with open(os.path.join(self.config.provenance_dir, f"hold-safe-{int(time.time())}.json"), "w", encoding="utf-8") as f:
-            json.dump(att, f, sort_keys=True)
+        try:
+            os.makedirs(self.config.provenance_dir, exist_ok=True)
+            with open(os.path.join(self.config.provenance_dir, f"hold-safe-{int(time.time())}.json"), "w", encoding="utf-8") as f:
+                json.dump(att, f, sort_keys=True)
+        except Exception as e:
+            logger.error(f"Failed to write hold-safe attestation: {e}")
         if self.config.mode == "enforce":
             if self._human_approval({"reason": reason, "details": details}):
-                raise TrainHaltRequested(f"Training halt approved: {reason}")
+                rollback_path = self.rollback_to_last_safe_checkpoint()
+                self._telemetry.emit({"event": "halt_approved", "rollback": rollback_path})
+                raise TrainHaltRequested(f"Training halt approved: {reason}; rollback={rollback_path or 'none'}")
             else:
                 logger.warning("Halt not approved; staying in hold-safe monitoring.")
 
