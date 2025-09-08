@@ -982,7 +982,7 @@ security_tools:
   - RAG output cites a document whose stored hash mismatches current content; tool
     blocks response, records incident with provenance details, and alerts.
   ready: true
-  status: todo
+  status: needs_work
   area_allowlist:
   - tools/ai_security/ragshield_auditor.py
   - tests/test_ai_security_006.py
@@ -1383,4 +1383,87 @@ security_tools:
   area_allowlist:
   - tools/threat_hunting/shadowpipeline_hunter.py
   - tests/test_threat_hunting_004.py
+  max_changed_lines: 500
+- id: AI_SECURITY-011
+  title: 'FineTune Sentinel: Hosted Finetune Leakage & Provenance Auditor'
+  category: ai_security
+  description: Audits hosted fine-tuning jobs across cloud/SaaS LLM services for dataset
+    provenance, PII leakage, membership-inference risk, and model theft; instruments
+    job telemetry and evaluates outputs with canary prompts, drift checks, and policy
+    gates; emits signed, reproducible attestations and can quarantine risky promotions.
+  security_requirements:
+  - Default read-only via provider APIs; collect only hashed metadata/metrics (no
+    raw PII) and store evidence with encryption-at-rest and role-scoped access.
+  - Enforce egress allowlists for evaluation tools/prompts; sign findings and policy
+    decisions using Sigstore (Fulcio/Rekor) with time-stamped attestations.
+  - Require dataset hash manifests and provenance attestations; block runs on mismatch
+    via OPA policies with reproducible replay inputs.
+  acceptance_tests:
+  - When a canary record seeded in the training set appears in model outputs during
+    evaluation, the tool blocks promotion and emits a signed attestation.
+  - A fine-tune job with missing or mismatched dataset hash/provenance is prevented
+    from starting and a policy violation report is generated.
+  - Membership inference risk score above a configurable threshold triggers quarantine
+    of the model artifact and a reproducible evidence bundle is stored.
+  ready: true
+  status: todo
+  area_allowlist:
+  - tools/ai_security/finetune_sentinel.py
+  - tests/test_ai_security_011.py
+  max_changed_lines: 500
+- id: CLOUD-010
+  title: 'ArtifactGraph Guard: Cross-Cloud Registry Replication & Signature Enforcer'
+  category: cloud
+  description: Builds a graph of container/model/package registries and replication
+    policies across AWS ECR, GCP Artifact Registry, Azure ACR, Docker Hub, and HuggingFace;
+    detects public exposure, tag squatting, unsigned artifacts, and OIDC/webhook trust
+    drift; enforces cosign/Sigstore verification on pull/promotion and validates guardrails
+    via namespaced canary replications.
+  security_requirements:
+  - Operate read-only by default; remediation actions require explicit approval and
+    scoped, least-privilege credentials with change logs.
+  - Verify signatures and provenance attestations (cosign/Sigstore, SLSA, in-toto)
+    and block unsigned/unchained promotions with Rekor inclusion checks.
+  - Use namespaced, time-limited canary artifacts for policy validation; auto-cleanup
+    enabled and no deletion of customer artifacts without opt-in.
+  acceptance_tests:
+  - Unsigned images in a protected repository are identified and promotion requests
+    are failed with a detailed signed report and remediation steps.
+  - A replication rule that exposes a private registry to a public target is detected
+    and escalated as a critical misconfiguration with blast-radius mapping.
+  - Cross-cloud replication using OIDC/webhooks with audience/issuer mismatch is flagged
+    and blocked pending trust-policy correction.
+  ready: true
+  status: todo
+  area_allowlist:
+  - tools/cloud/artifactgraph_guard.py
+  - tests/test_cloud_010.py
+  max_changed_lines: 500
+- id: MOBILE-002
+  title: Baseband & eSIM Attack Surface Auditor
+  category: mobile
+  description: Audits Android/iOS and MDM configs for baseband/eSIM/SIM Toolkit risks
+    including WAP Push/CP, Class 0/Flash/Silent SMS, UICC applet permissions, carrier
+    configuration profiles, and IMS/VoLTE edge cases; simulates benign canary messages
+    in lab mode, detects downgrade/roaming abuse, and produces sealed, privacy-preserving
+    evidence.
+  security_requirements:
+  - Leverage userland/MDM APIs only; no baseband firmware modifications; apply strict
+    rate limits for any radio interactions and support lab-only simulation.
+  - Emulate STK commands and WAP Push using isolated test IMSIs in lab mode; never
+    transmit real subscriber data or alter carrier settings in production.
+  - Cryptographically seal findings with timestamps; capture only metadata in production
+    and require explicit consent to collect payloads in lab settings.
+  acceptance_tests:
+  - Devices accepting WAP Push without user consent are detected and an MDM/carrier
+    configuration remediation is recommended with a sealed evidence record.
+  - An MDM profile permitting silent/flash SMS is flagged with a hardening baseline
+    and a validation script to enforce stricter settings.
+  - Canary Class 0 SMS in production are blocked (no user-visible disruption) and
+    the event is logged with signed, forensically sound telemetry.
+  ready: true
+  status: todo
+  area_allowlist:
+  - tools/mobile/baseband_esim_auditor.py
+  - tests/test_mobile_002.py
   max_changed_lines: 500
