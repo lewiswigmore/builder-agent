@@ -1063,7 +1063,7 @@ security_tools:
   - For a tool release signed by a trusted key, the auditor verifies Rekor inclusion,
     generates an SBOM, and passes with a signed attestation artifact.
   ready: true
-  status: todo
+  status: needs_work
   area_allowlist:
   - tools/ai_security/toolforge_auditor.py
   - tests/test_ai_security_toolforge_auditor.py
@@ -1466,4 +1466,88 @@ security_tools:
   area_allowlist:
   - tools/mobile/baseband_esim_auditor.py
   - tests/test_mobile_002.py
+  max_changed_lines: 500
+- id: NET-004
+  title: MASQUE/HTTP3 Covert Proxy Exfil Hunter
+  category: network
+  description: "Detects covert data exfiltration and tunneling over MASQUE, HTTP/3\
+    \ CONNECT-UDP/CONNECT-IP, and enterprise-bypassing QUIC proxies by profiling handshake/tunnel\
+    \ semantics, QPACK/headers, spin-bit/timing features, endpoint fingerprints, and\
+    \ policy drift\u2014without decrypting payloads."
+  security_requirements:
+  - Operate passively on metadata only (no payload decryption); hash sensitive identifiers
+    with rotating, HSM-protected salts to preserve privacy.
+  - Maintain signed, versioned detection rules/models and integrity-verified endpoint
+    fingerprints (Sigstore/Rekor attestations).
+  - Emit forensically sound alerts with clock-synchronized timestamps (Roughtime/RFC3161)
+    and sealed evidence bundles (PCAP headers, JA4/JA4S, flow stats).
+  acceptance_tests:
+  - When a host initiates HTTP/3 CONNECT-UDP to a MASQUE-capable origin, the system
+    classifies the flow as a tunnel and emits a high-confidence alert with supporting
+    QUIC/MASQUE indicators.
+  - Legitimate QUIC web traffic (non-CONNECT tunnels) is not flagged, keeping false
+    positives under a defined threshold on a clean baseline capture.
+  - If an allowlisted enterprise MASQUE egress is used within policy, the system records
+    the event but suppresses alerts while still sealing minimal evidence for audit.
+  ready: true
+  status: todo
+  area_allowlist:
+  - tools/network/masque_exfil_hunter.py
+  - tests/test_net_004.py
+  max_changed_lines: 500
+- id: CLOUD-011
+  title: 'AuditLog Tamper Sentinel: Cross-Cloud Integrity & Gap Detector'
+  category: cloud
+  description: Continuously verifies integrity, completeness, and retention of AWS/Azure/GCP
+    control-plane and data-plane audit logs by validating digest chains (e.g., CloudTrail
+    Digest), storage immutability (Object Lock/WORM), sequence/timestamp continuity,
+    and policy drift; anchors proofs to external timestamping and emits sealed, court-ready
+    findings.
+  security_requirements:
+  - Use read-only, least-privilege roles; verify log object immutability and bucket/container
+    policies on every run; alert on drift or retroactive changes.
+  - Validate provider-signed digests/manifest chains and cross-verify with external
+    timestamp authorities (RFC3161) and transparency logs (Rekor).
+  - Seal evidence bundles with cryptographic signatures, include NTP/chrony health,
+    and store in an immutable archive with rotation and key separation (KMS/HSM).
+  acceptance_tests:
+  - If a CloudTrail digest mismatch or missing digest interval is detected, the system
+    raises a critical alert with the exact affected time window and verification artifacts.
+  - When retention or object-lock policies are weakened (e.g., reduced retention,
+    disabled legal hold), the system flags policy drift and proposes remediation-as-code.
+  - On buckets/containers where logs are intact and policy-compliant, the system produces
+    a signed attestation proving continuity and immutability for the audited period.
+  ready: true
+  status: todo
+  area_allowlist:
+  - tools/cloud/auditlog_tamper_sentinel.py
+  - tests/test_cloud_011.py
+  max_changed_lines: 500
+- id: AI_SECURITY-012
+  title: 'GenCode Risk Auditor: AI-Generated Code Supply Chain Scanner'
+  category: ai_security
+  description: Analyzes pull requests and CI artifacts to detect risky AI-generated
+    code patterns (unsafe eval/deserialize, prompt-injection sinks, insecure crypto,
+    SSRF/XSS/SQLi), correlates dependency diffs with typosquat/confusion risks, sandboxes
+    suspicious snippets with egress allowlists, and produces signed SBOMs and policy-gated
+    risk attestations.
+  security_requirements:
+  - "Perform static analysis locally; never upload proprietary code\u2014use offline\
+    \ rules/models or approved on-prem inference; scrub PII and secrets from reports."
+  - Execute dynamic/snippet tests only in hermetic sandboxes with network egress allowlists,
+    syscall tracing, and artifact hashing; forbid credential access.
+  - Sign all outputs (risk reports, SBOMs, provenance) and verify third-party rulepacks/plugins
+    via Sigstore; maintain reproducible scans with pinned dependencies.
+  acceptance_tests:
+  - A PR introducing an unsafe eval plus outbound fetch to an unapproved domain is
+    blocked with a high-risk finding and sandbox transcript showing prevented egress.
+  - A dependency change to a typosquatted package is detected and the pipeline fails
+    with remediation guidance and a signed attestation citing the offending artifact.
+  - On a clean repository, the tool emits a low-risk verdict, a signed CycloneDX SBOM,
+    and a provenance attestation suitable for CI policy gates.
+  ready: true
+  status: todo
+  area_allowlist:
+  - tools/ai_security/gencode_risk_auditor.py
+  - tests/test_ai_security_012.py
   max_changed_lines: 500
