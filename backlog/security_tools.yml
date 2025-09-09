@@ -1092,7 +1092,7 @@ security_tools:
     workflow (network isolate tag) and produce a signed evidence bundle including
     source IP and user agent.
   ready: true
-  status: todo
+  status: needs_work
   area_allowlist:
   - tools/cloud/metasurf_watch.py
   - tests/test_cloud_metasurf_watch.py
@@ -1550,4 +1550,86 @@ security_tools:
   area_allowlist:
   - tools/ai_security/gencode_risk_auditor.py
   - tests/test_ai_security_012.py
+  max_changed_lines: 500
+- id: AI_SECURITY-013
+  title: 'SideChannel Guard: ML Timing/Cache Egress Monitor'
+  category: ai_security
+  description: Profiles ML training/inference for side-channel leakage via timing,
+    cache activity, and GPU/CPU perf counters; orchestrates differential input fuzzing
+    to quantify leakage, enforces constant-time padding and noise strategies, and
+    emits signed, reproducible attestations for CI/CD gates.
+  security_requirements:
+  - Use least-privilege eBPF/perf access with explicit user consent; collect only
+    aggregate, non-content telemetry (no model weights or raw inputs).
+  - Store telemetry encrypted at rest; block outbound network by default and require
+    explicit egress allowlists for any remote reporting.
+  - Produce signed leakage attestations (e.g., in-toto/Sigstore) including environment
+    hashes (driver/kernel/tooling) and reproducible test vectors.
+  acceptance_tests:
+  - Introduce a synthetic data-dependent branch in a PyTorch model; tool detects timing
+    variance above threshold and raises LEAKAGE_TIMING with supporting metrics.
+  - Enable constant-time padding mitigation; leakage score falls below policy threshold
+    and no alert is emitted for the same workload.
+  - Generate an attestation bundle containing leakage score, environment hashes, and
+    signed provenance; signature verification succeeds with the configured trust root.
+  ready: true
+  status: todo
+  area_allowlist:
+  - tools/ai_security/sidechannel_guard.py
+  - tests/test_ai_security_013.py
+  max_changed_lines: 500
+- id: CLOUD-012
+  title: 'WebhookShield: SaaS/CI Webhook Trust Drift Auditor'
+  category: cloud
+  description: Audits and protects inbound webhooks for CI/CD and SaaS integrations
+    by validating HMAC/mTLS signatures, timestamps and nonces, IP/CN pinning, and
+    schema diffs; deploys honey webhooks to detect replay and credential leakage;
+    auto-rotates secrets and enforces policy-as-code with immutable, timestamped logs.
+  security_requirements:
+  - Enforce signature verification (HMAC/mTLS), strict clock skew windows, and one-time
+    nonces to prevent replay and trust drift.
+  - Maintain append-only, hash-chained audit logs with external timestamping/anchoring
+    for forensic integrity.
+  - Quarantine honey endpoint hits, auto-rotate shared secrets/keys safely, and emit
+    signed incident artifacts without disrupting legitimate flows.
+  acceptance_tests:
+  - Replay a captured webhook outside the allowed time window; request is rejected
+    and REPLAY_DETECTED is logged with source IP and signature details.
+  - Send a webhook with an invalid signature; tool fails closed, emits SIGNATURE_INVALID,
+    and stores a sealed forensic bundle (headers, hash, verification trace).
+  - Trigger a honey webhook from an untrusted origin; tool rotates the secret, blocks
+    the source, and opens a tracked incident with signed evidence.
+  ready: true
+  status: todo
+  area_allowlist:
+  - tools/cloud/webhookshield.py
+  - tests/test_cloud_012.py
+  max_changed_lines: 500
+- id: IOT-006
+  title: 'LPWANGuard: LoRaWAN Key & Replay Auditor'
+  category: iot
+  description: "Analyzes LoRaWAN OTAA/ABP traffic and device inventories to detect\
+    \ AppKey reuse, weak/\u91CD\u590D DevNonce patterns, MIC failures, and replay\
+    \ risk; performs lab-safe join simulations, validates ADR/MAC command hardening,\
+    \ supports SDR captures and gateway logs, and emits sealed, privacy-preserving\
+    \ reports."
+  security_requirements:
+  - Default to passive RF monitoring; allow active tests only in lab mode with configured
+    duty-cycle, frequency plan, and power limits to ensure regulatory compliance.
+  - Prohibit key brute-forcing; verify keys only against provided inventories and
+    cryptographic checks; redact DevEUI/AppEUI in outputs by default.
+  - Seal evidence bundles (PCAP excerpts, join transcripts, key fingerprints) with
+    hash chains and trusted timestamps for forensic soundness.
+  acceptance_tests:
+  - Observe multiple OTAA joins with repeated DevNonce for the same DevEUI; tool flags
+    REPLAY_RISK and references supporting frames in the sealed bundle.
+  - Identify an ABP device using default/known NwkSKey/AppSKey patterns from inventory;
+    tool recommends OTAA migration and key rotation with concrete steps.
+  - Attempt active transmission without lab mode configuration; tool refuses to transmit
+    and records a LAB_MODE_REQUIRED safety error.
+  ready: true
+  status: todo
+  area_allowlist:
+  - tools/iot/lpwan_guard.py
+  - tests/test_iot_006.py
   max_changed_lines: 500
