@@ -1009,7 +1009,7 @@ security_tools:
   - A legitimate cargo build with registry access on an allowlisted domain completes,
     produces an SBOM, and emits a Sigstore-signed attestation.
   ready: true
-  status: in_progress
+  status: needs_work
   area_allowlist:
   - tools/vulnerability/hermetic_build_watchdog.py
   - tests/test_vuln_003.py
