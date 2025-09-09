@@ -1092,7 +1092,7 @@ security_tools:
     workflow (network isolate tag) and produce a signed evidence bundle including
     source IP and user agent.
   ready: true
-  status: todo
+  status: in_progress
   area_allowlist:
   - tools/cloud/metasurf_watch.py
   - tests/test_cloud_metasurf_watch.py
