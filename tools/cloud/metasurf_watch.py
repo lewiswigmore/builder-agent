@@ -204,16 +204,42 @@ class CanaryManager:
         return {"note": "default_empty_policy"}
 
 
+def _normalize_host(host: str) -> str:
+    """Remove schemes, paths, and ports from a host-like string."""
+    if not isinstance(host, str):
+        return ""
+    h = host.strip()
+    # Remove scheme if present
+    for scheme in ("http://", "https://", "tcp://"):
+        if h.lower().startswith(scheme):
+            h = h[len(scheme):]
+            break
+    # Strip path
+    if "/" in h:
+        h = h.split("/", 1)[0]
+    # Strip IPv6 brackets
+    if h.startswith("[") and "]" in h:
+        h = h[1:h.index("]")]
+    # Strip port
+    if ":" in h:
+        # If it's an IPv6 without brackets, leave as is; otherwise strip port
+        parts = h.rsplit(":", 1)
+        if len(parts) == 2 and all(c.isdigit() for c in parts[1]):
+            h = parts[0]
+    return h.strip().strip(".")
+
+
 def is_metadata_host(host: str) -> bool:
     try:
+        nh = _normalize_host(host)
         # Match literal IPs and resolvable hostnames
-        if host in ALL_METADATA_HOSTS:
+        if nh in ALL_METADATA_HOSTS:
             return True
-        ip = ipaddress.ip_address(host)
+        ip = ipaddress.ip_address(nh)
         return str(ip) in ALL_METADATA_HOSTS
     except ValueError:
         # Not an IP; compare hostname
-        h = host.lower().strip(".")
+        h = _normalize_host(host).lower()
         return h in ALL_METADATA_HOSTS
 
 
@@ -249,7 +275,6 @@ class MetasurfWatch:
         """
         self.ratelimiter.acquire()
         findings: List[Dict[str, Any]] = []
-        severity = "info"
         if provider == "aws":
             mo = instance.get("metadata_options", {})
             http_tokens = str(mo.get("http_tokens", "")).lower() or "optional"
@@ -257,7 +282,6 @@ class MetasurfWatch:
             endpoint = mo.get("endpoint", "enabled")
             if http_tokens != "required" or hop > 1 or endpoint != "enabled":
                 sev = "high" if http_tokens != "required" or hop > 1 else "medium"
-                severity = max(severity, sev, key=lambda s: ["info", "low", "medium", "high", "critical"].index(s))
                 details = {
                     "provider": "aws",
                     "instance_id": instance.get("instance_id"),
@@ -278,7 +302,6 @@ class MetasurfWatch:
                 }
                 findings.append(finding)
         elif provider in ("azure", "gcp"):
-            # Provide generic guidance; cannot directly configure IMDS tokens like AWS
             findings.append({
                 "severity": "medium",
                 "category": "imds_hardening",
@@ -337,7 +360,7 @@ class MetasurfWatch:
 
     def simulate_ssrf_attempt(self, origin: Dict[str, Any], request: Dict[str, Any]) -> Dict[str, Any]:
         """
-        origin: { cluster, namespace, pod, service_account, pod_uid, node }
+        origin: { cluster, namespace, pod, service_account, pod_uid, node, roles? }
         request: { method, host, path, user_agent }
         """
         self.ratelimiter.acquire()
@@ -354,6 +377,7 @@ class MetasurfWatch:
             "request": request,
             "ethics_notice": ETHICS_NOTICE,
             "timestamp": utc_now(),
+            "identity_proof": self._identity_proof(workload_identity={"origin": origin}),
         }
         blast = self._blast_radius_analysis(origin)
         result["blast_radius"] = blast
@@ -364,7 +388,7 @@ class MetasurfWatch:
             "recommended_actions": self._quarantine_plan_from_origin(origin),
         }
         ticket_path = self.store.open_ticket(
-            title=f"SSRF attempt to {dest_host} by pod {origin.get('pod')}",
+            title=f"SSRF attempt to {_normalize_host(dest_host) or dest_host} by pod {origin.get('pod')}",
             details=ticket_details,
         )
         result["ticket_path"] = str(ticket_path)
@@ -431,6 +455,7 @@ class MetasurfWatch:
                 "raw_event": event,
                 "timestamp": utc_now(),
                 "identity_proof": self._identity_proof(),
+                "ethics_notice": ETHICS_NOTICE,
             }
             ev_path = self._store_signed_evidence("canary-usage", evidence)
             response["evidence_path"] = str(ev_path)
@@ -508,13 +533,15 @@ class MetasurfWatch:
     def safe_probe(self, provider: str, allow_network: bool = False, timeout: float = 0.3) -> Dict[str, Any]:
         """
         Perform a safe, rate-limited probe to metadata endpoints without requesting sensitive data.
-        By default, no network activity occurs unless allow_network=True. If allowed, sends a HEAD
-        request to a non-secret path or canary endpoint simulation.
+        By default, no network activity occurs unless allow_network=True. If allowed, sends a TCP
+        connect only to a metadata endpoint to test reachability.
         """
         self.ratelimiter.acquire()
         probe_result = {"provider": provider, "performed_network": False, "reachable": None, "ethics_notice": ETHICS_NOTICE}
         if not allow_network:
             probe_result["note"] = "Network probing disabled. Use --allow-probes for authorized testing."
+            path = self._store_signed_evidence("safe-probe", {"result": probe_result, "timestamp": utc_now()})
+            probe_result["evidence_path"] = str(path)
             return probe_result
         try:
             # Simulate probe by TCP connect only; do not send HTTP requests.
