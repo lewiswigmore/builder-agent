@@ -356,6 +356,7 @@ class MetasurfWatch:
             "timestamp": utc_now(),
         }
         blast = self._blast_radius_analysis(origin)
+        result["blast_radius"] = blast
         ticket_details = {
             "type": "ssrf_attempt",
             "result": result,
