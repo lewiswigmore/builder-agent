@@ -1036,7 +1036,7 @@ security_tools:
   - Generate a signed (Sigstore) PQ-readiness report and verify inclusion in a transparency
     log with tamper-evident metadata.
   ready: true
-  status: in_progress
+  status: needs_work
   area_allowlist:
   - tools/cryptography/pq_migrate_auditor.py
   - tests/test_crypto_002.py
