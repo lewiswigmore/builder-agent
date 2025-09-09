@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 import argparse
 import base64
-import binascii
 import datetime
 import json
 import os
@@ -10,13 +9,9 @@ import socket
 import ssl
 import subprocess
 import sys
-import tempfile
-import threading
-import time
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Any
 
-# Ethical and legal warning shown before any active operations
 ETHICAL_WARNING = (
     "ETHICAL NOTICE: Use this tool only on systems and codebases you own or are authorized to test. "
     "Unauthorized probing or scanning may violate laws or policies. Proceed responsibly."
@@ -39,21 +34,17 @@ WEAK_ALGO_PATTERNS = [
     (re.compile(r"\baes[-_]?cbc\b", re.IGNORECASE), "AES-CBC", "medium", "Prefer AEAD modes: AES-GCM or ChaCha20-Poly1305."),
 ]
 
-# PQ/hybrid KEM group names commonly seen with OpenSSL + OQS provider variants
 PQ_GROUP_CANDIDATES = [
     "x25519_kyber768", "p256_kyber768", "x25519kyber768", "p256kyber768", "kyber768",
     "x25519_kyber512", "p256_kyber512", "kyber512", "x25519_kyber1024", "kyber1024",
 ]
-# Signature algorithm candidates (may not be negotiated by server; for guidance)
 PQ_SIG_ALGOS = ["dilithium2", "dilithium3", "dilithium5", "falcon512", "falcon1024"]
-
 SEVERITY_SCORE = {"critical": 100, "high": 80, "medium": 50, "low": 20}
 
 
 def is_probably_text(data: bytes) -> bool:
     if not data:
         return True
-    # Consider printable ASCII prevalence; allow whitespace and common symbols
     printable = sum(32 <= b < 127 or b in (9, 10, 13) for b in data[:1024])
     ratio = printable / max(1, min(1024, len(data)))
     return ratio > 0.85
@@ -74,8 +65,7 @@ def read_text_safe(path: Path) -> Optional[str]:
 
 
 def extract_ascii_strings(buf: bytes, min_len: int = 4) -> List[str]:
-    out = []
-    current = bytearray()
+    out, current = [], bytearray()
     for b in buf:
         if 32 <= b < 127:
             current.append(b)
@@ -89,25 +79,11 @@ def extract_ascii_strings(buf: bytes, min_len: int = 4) -> List[str]:
 
 
 def file_language(path: Path) -> str:
-    ext = path.suffix.lower()
-    mapping = {
-        ".py": "python",
-        ".js": "javascript",
-        ".ts": "typescript",
-        ".java": "java",
-        ".go": "go",
-        ".c": "c",
-        ".h": "c",
-        ".cpp": "cpp",
-        ".hpp": "cpp",
-        ".rs": "rust",
-        ".rb": "ruby",
-        ".php": "php",
-        ".cs": "csharp",
-        ".swift": "swift",
-        ".kt": "kotlin",
-    }
-    return mapping.get(ext, "unknown")
+    return {
+        ".py": "python", ".js": "javascript", ".ts": "typescript", ".java": "java", ".go": "go",
+        ".c": "c", ".h": "c", ".cpp": "cpp", ".hpp": "cpp", ".rs": "rust", ".rb": "ruby",
+        ".php": "php", ".cs": "csharp", ".swift": "swift", ".kt": "kotlin"
+    }.get(path.suffix.lower(), "unknown")
 
 
 def severity_priority(sev: str) -> int:
@@ -119,31 +95,11 @@ def now_iso() -> str:
 
 
 class SimulatedKMS:
-    """
-    Simulated KMS/HSM for signing readiness reports.
-    Tries to use cryptography's Ed25519 if available, else HMAC-SHA256 as a fallback.
-    """
     def __init__(self, key_dir: Path):
         self.key_dir = key_dir
         self.key_dir.mkdir(parents=True, exist_ok=True)
-        self.mode = "ed25519"
-        self._crypto = None
-        try:
-            from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
-            from cryptography.hazmat.primitives import serialization
-            self._Ed25519PrivateKey = Ed25519PrivateKey
-            self._serialization = serialization
-            self._crypto = "cryptography"
-        except Exception:
-            self.mode = "hmac"
         self.priv_path = self.key_dir / "sigstore_sim_key"
         self.pub_path = self.key_dir / "sigstore_sim_key.pub"
-
-    def _load_or_create(self):
-        if self.mode == "ed25519":
-            return self._load_or_create_ed25519()
-        else:
-            return self._load_or_create_hmac()
 
     def _load_or_create_ed25519(self):
         from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
@@ -151,70 +107,63 @@ class SimulatedKMS:
         if self.priv_path.exists():
             with open(self.priv_path, "rb") as f:
                 key = serialization.load_pem_private_key(f.read(), password=None)
+        else:
+            key = Ed25519PrivateKey.generate()
+            priv_pem = key.private_bytes(
+                encoding=serialization.Encoding.PEM,
+                format=serialization.PrivateFormat.PKCS8,
+                encryption_algorithm=serialization.NoEncryption(),
+            )
+            with open(self.priv_path, "wb") as f:
+                f.write(priv_pem)
             pub = key.public_key().public_bytes(
                 encoding=serialization.Encoding.Raw,
                 format=serialization.PublicFormat.Raw,
             )
-            return key, pub
-        key = Ed25519PrivateKey.generate()
-        priv_pem = key.private_bytes(
-            encoding=serialization.Encoding.PEM,
-            format=serialization.PrivateFormat.PKCS8,
-            encryption_algorithm=serialization.NoEncryption(),
-        )
-        with open(self.priv_path, "wb") as f:
-            f.write(priv_pem)
+            with open(self.pub_path, "wb") as f:
+                f.write(base64.b64encode(pub))
         pub = key.public_key().public_bytes(
             encoding=serialization.Encoding.Raw,
             format=serialization.PublicFormat.Raw,
         )
-        with open(self.pub_path, "wb") as f:
-            f.write(base64.b64encode(pub))
         return key, pub
 
     def _load_or_create_hmac(self):
         if self.priv_path.exists():
             with open(self.priv_path, "rb") as f:
                 key = f.read()
-            return key, key  # symmetric
-        key = os.urandom(32)
-        with open(self.priv_path, "wb") as f:
-            f.write(key)
-        with open(self.pub_path, "wb") as f:
-            f.write(base64.b64encode(key))
+        else:
+            key = os.urandom(32)
+            with open(self.priv_path, "wb") as f:
+                f.write(key)
+            with open(self.pub_path, "wb") as f:
+                f.write(base64.b64encode(key))
         return key, key
 
     def sign(self, data: bytes) -> Dict[str, Any]:
-        key, pub = self._load_or_create()
-        if self.mode == "ed25519":
+        try:
+            from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey  # noqa
+            key, pub = self._load_or_create_ed25519()
             sig = key.sign(data)
-            alg = "Ed25519"
-            pub_b64 = base64.b64encode(pub).decode()
-            sig_b64 = base64.b64encode(sig).decode()
-        else:
-            import hmac
-            import hashlib
+            return {"algorithm": "Ed25519", "public_key": base64.b64encode(pub).decode(), "signature": base64.b64encode(sig).decode()}
+        except Exception:
+            import hmac, hashlib
+            key, pub = self._load_or_create_hmac()
             sig = hmac.new(key, data, hashlib.sha256).digest()
-            alg = "HMAC-SHA256"
-            pub_b64 = base64.b64encode(pub).decode()
-            sig_b64 = base64.b64encode(sig).decode()
-        return {"algorithm": alg, "public_key": pub_b64, "signature": sig_b64}
+            return {"algorithm": "HMAC-SHA256", "public_key": base64.b64encode(pub).decode(), "signature": base64.b64encode(sig).decode()}
 
-    def verify(self, data: bytes, signature: Dict[str, Any]) -> bool:
+    @staticmethod
+    def verify_any(data: bytes, signature: Dict[str, Any]) -> bool:
         try:
             alg = signature.get("algorithm")
-            pub_b64 = signature.get("public_key")
-            sig_b64 = signature.get("signature")
-            pub = base64.b64decode(pub_b64)
-            sig = base64.b64decode(sig_b64)
-            if self.mode == "ed25519" and alg == "Ed25519":
+            pub = base64.b64decode(signature.get("public_key", ""))
+            sig = base64.b64decode(signature.get("signature", ""))
+            if alg == "Ed25519":
                 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
-                key = Ed25519PublicKey.from_public_bytes(pub)
-                key.verify(sig, data)
+                Ed25519PublicKey.from_public_bytes(pub).verify(sig, data)
                 return True
-            elif self.mode == "hmac" and alg == "HMAC-SHA256":
-                import hmac
-                import hashlib
+            if alg == "HMAC-SHA256":
+                import hmac, hashlib
                 expected = hmac.new(pub, data, hashlib.sha256).digest()
                 return hmac.compare_digest(expected, sig)
         except Exception:
@@ -223,9 +172,6 @@ class SimulatedKMS:
 
 
 class TransparencyLog:
-    """
-    Append-only JSON Lines transparency log with hash chaining for tamper-evidence.
-    """
     def __init__(self, path: Path):
         self.path = path
 
@@ -245,7 +191,7 @@ class TransparencyLog:
 
     def append(self, entry: Dict[str, Any]) -> Dict[str, Any]:
         import hashlib
-        prev, prev_hash = self._last_entry()
+        _, prev_hash = self._last_entry()
         payload = json.dumps(entry, sort_keys=True, separators=(",", ":")).encode()
         h = hashlib.sha256()
         if prev_hash:
@@ -339,7 +285,7 @@ class PQMigrateAuditor:
                         for lineno, line in enumerate(text.splitlines(), start=1):
                             for regex, label, severity, remediation in WEAK_ALGO_PATTERNS:
                                 if regex.search(line):
-                                    finding = {
+                                    fnd = {
                                         "file": str(fp),
                                         "line": lineno,
                                         "algorithm": label,
@@ -349,23 +295,19 @@ class PQMigrateAuditor:
                                         "language": lang,
                                         "remediation": remediation,
                                     }
-                                    findings.append(finding)
-                                    key = label
-                                    inv = inventory.setdefault(key, {"count": 0, "files": set()})
+                                    findings.append(fnd)
+                                    inv = inventory.setdefault(label, {"count": 0, "files": set()})
                                     inv["count"] += 1
                                     inv["files"].add(str(fp))
                     else:
-                        # Binary analysis: look for algorithm strings
                         try:
                             with open(fp, "rb") as f:
                                 buf = f.read(1024 * 512)
                             strings = extract_ascii_strings(buf, min_len=4)
                             hits = []
                             for label in ["SHA1", "MD5", "RC4", "DES", "3DES", "rsaEncryption", "kyber", "dilithium"]:
-                                for s in strings:
-                                    if label.lower() in s.lower():
-                                        hits.append(label)
-                                        break
+                                if any(label.lower() in s.lower() for s in strings):
+                                    hits.append(label)
                             if hits:
                                 binary_hits.append({"file": str(fp), "hits": sorted(set(hits))})
                                 for label in hits:
@@ -376,30 +318,11 @@ class PQMigrateAuditor:
                             pass
                 except Exception:
                     continue
-        # Convert set to list
-        inventory_out = {}
-        for k, v in inventory.items():
-            inventory_out[k] = {"count": v["count"], "files": sorted(list(v["files"]))}
-
+        inventory_out = {k: {"count": v["count"], "files": sorted(list(v["files"]))} for k, v in inventory.items()}
         prioritized = sorted(findings, key=lambda x: (-x["priority"], x["algorithm"], x["file"], x["line"]))
-
-        summary = {
-            "scanned_files": total_files,
-            "weak_findings_count": len(prioritized),
-            "inventory": inventory_out,
-        }
-
+        summary = {"scanned_files": total_files, "weak_findings_count": len(prioritized), "inventory": inventory_out}
         remediation_plan = self._build_remediation_plan(prioritized)
-
-        report = {
-            "timestamp": now_iso(),
-            "path": str(path),
-            "summary": summary,
-            "findings": prioritized,
-            "binary_hits": binary_hits,
-            "remediation_plan": remediation_plan,
-        }
-
+        report = {"timestamp": now_iso(), "path": str(path), "summary": summary, "findings": prioritized, "binary_hits": binary_hits, "remediation_plan": remediation_plan}
         self.state.setdefault("last_scan", report)
         self._save_state()
         return report
@@ -407,7 +330,7 @@ class PQMigrateAuditor:
     def _build_remediation_plan(self, findings: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         plan: List[Dict[str, Any]] = []
         for f in findings:
-            safer = ""
+            safer = f.get("remediation", "Replace with modern, PQ-ready alternatives.")
             if f["algorithm"] in ("SHA-1", "HMAC-SHA1"):
                 safer = "Switch to SHA-256/512; e.g., hashlib.sha256 in Python, MessageDigest.getInstance('SHA-256') in Java."
             elif f["algorithm"] == "MD5":
@@ -420,16 +343,9 @@ class PQMigrateAuditor:
                 safer = "Use RSA-PSS (sign) and RSA-OAEP (encrypt) with SHA-256."
             elif "AES-CBC" in f["algorithm"]:
                 safer = "Use AES-GCM or ChaCha20-Poly1305; CBC requires careful padding/oracle mitigations."
-            else:
-                safer = f.get("remediation", "Replace with modern, PQ-safe or PQ-ready alternatives.")
             plan.append({
-                "priority": f["priority"],
-                "severity": f["severity"],
-                "file": f["file"],
-                "line": f["line"],
-                "issue": f["algorithm"],
-                "snippet": f["snippet"],
-                "recommended_fix": safer,
+                "priority": f["priority"], "severity": f["severity"], "file": f["file"], "line": f["line"],
+                "issue": f["algorithm"], "snippet": f["snippet"], "recommended_fix": safer
             })
         return plan
 
@@ -439,33 +355,22 @@ class PQMigrateAuditor:
         for tgt in targets:
             host, port = self._parse_target(tgt)
             res = {
-                "host": host,
-                "port": port,
-                "tls_version": None,
-                "cipher": None,
-                "certificate_sigalg": None,
-                "pq_kem_supported": [],
-                "errors": [],
-                "recommendations": [],
-                "config_templates": {},
+                "host": host, "port": port, "tls_version": None, "cipher": None, "certificate_sigalg": None,
+                "pq_kem_supported": [], "errors": [], "recommendations": [], "config_templates": {}
             }
             try:
-                tls_info = self._tls_basic_info(host, port, timeout)
-                res.update(tls_info)
+                res.update(self._tls_basic_info(host, port, timeout))
             except Exception as e:
                 res["errors"].append(f"TLS handshake failed: {e}")
-
-            # Try probing for each PQ group candidate with OpenSSL CLI if available
             pq_supported = []
             for group in PQ_GROUP_CANDIDATES:
                 try:
-                    ok, detail = self._openssl_probe_group(host, port, group, timeout=timeout)
+                    ok, _ = self._openssl_probe_group(host, port, group, timeout=timeout)
                     if ok:
                         pq_supported.append(group)
                 except Exception as e:
                     res["errors"].append(f"Probe error for group {group}: {e}")
             res["pq_kem_supported"] = sorted(set(pq_supported))
-
             if not res["pq_kem_supported"]:
                 res["recommendations"].append(
                     "Hybrid PQ KEM not detected. Upgrade to OpenSSL 3.2+ with OQS provider or use a PQ-ready TLS terminator. "
@@ -475,12 +380,8 @@ class PQMigrateAuditor:
                 res["recommendations"].append(
                     f"Detected hybrid KEM support: {', '.join(res['pq_kem_supported'])}. Ensure fallback to classical groups remains enabled."
                 )
-
             res["config_templates"] = self._config_templates(host, port, res["pq_kem_supported"])
-
             results[f"{host}:{port}"] = res
-
-        # Persist state for later verification
         self.state.setdefault("last_probe", {"timestamp": now_iso(), "results": results})
         self._save_state()
         return {"timestamp": now_iso(), "results": results}
@@ -492,7 +393,7 @@ class PQMigrateAuditor:
         return target.strip(), 443
 
     def _tls_basic_info(self, host: str, port: int, timeout: int) -> Dict[str, Any]:
-        info = {}
+        info: Dict[str, Any] = {}
         ctx = ssl.create_default_context()
         ctx.check_hostname = False
         ctx.verify_mode = ssl.CERT_NONE
@@ -502,11 +403,9 @@ class PQMigrateAuditor:
                 info["cipher"] = ssock.cipher()[0] if ssock.cipher() else None
                 try:
                     pem = ssl.get_server_certificate((host, port))
-                    # Parse certificate signature algorithm if cryptography is present
                     sigalg = None
                     try:
                         from cryptography import x509
-                        from cryptography.hazmat.primitives import serialization
                         cert = x509.load_pem_x509_certificate(pem.encode())
                         sigalg = cert.signature_hash_algorithm.name if cert.signature_hash_algorithm else None
                     except Exception:
@@ -517,26 +416,18 @@ class PQMigrateAuditor:
         return info
 
     def _openssl_probe_group(self, host: str, port: int, group: str, timeout: int = 10) -> Tuple[bool, str]:
-        """
-        Attempt TLS 1.3 handshake with a specific (hybrid) group using openssl s_client.
-        Success implies server accepted group or negotiated TLS 1.3 with it.
-        """
         openssl = self._which("openssl")
         if not openssl:
             return False, "OpenSSL not available on PATH"
-        cmd = [
-            openssl, "s_client", "-connect", f"{host}:{port}", "-groups", group, "-tls1_3", "-brief"
-        ]
+        cmd = [openssl, "s_client", "-connect", f"{host}:{port}", "-groups", group, "-tls1_3", "-brief"]
         try:
             p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, input="", check=False)
         except subprocess.TimeoutExpired:
             return False, "Timeout"
         out = p.stdout + "\n" + p.stderr
-        if p.returncode == 0 and ("SSL-Session:" in out or "Protocol is TLSv1.3" in out or "Protocol  : TLSv1.3" in out):
-            # Check if group name appears in debug or temp key lines
+        if p.returncode == 0 and ("Protocol is TLSv1.3" in out or "Protocol  : TLSv1.3" in out or "SSL-Session:" in out):
             if re.search(group, out, re.IGNORECASE) or "Shared" in out or "Server Temp Key" in out:
                 return True, "Negotiated"
-            # Even without explicit mention, handshake success suggests fallback; not a proof of hybrid
             return False, "Handshake without explicit group evidence"
         return False, "Handshake failed"
 
@@ -552,35 +443,27 @@ class PQMigrateAuditor:
 
     def _config_templates(self, host: str, port: int, pq_groups: List[str]) -> Dict[str, str]:
         groups_str = ":".join(["X25519", "P-256"] + ([pq_groups[0]] if pq_groups else ["x25519_kyber768"]))
-        templates = {}
-
-        templates["openssl.cnf"] = f"""
+        return {
+            "openssl.cnf": f"""
 # OpenSSL 3.x with OQS provider example (requires oqsprovider installed)
 openssl_conf = openssl_init
-
 [openssl_init]
 providers = provider_sect
 ssl_conf = ssl_sect
-
 [provider_sect]
 default = default_sect
 oqsprovider = oqs_sect
-
 [default_sect]
 activate = 1
-
 [oqs_sect]
 activate = 1
-
 [ssl_sect]
 system_default = tls_sect
-
 [tls_sect]
 Curves = {groups_str}
 Options = ServerPreference,PrioritizeChaCha
-        """.strip()
-
-        templates["nginx.conf"] = f"""
+""".strip(),
+            "nginx.conf": f"""
 # NGINX example (requires OpenSSL linked with OQS provider for hybrid groups)
 ssl_protocols TLSv1.2 TLSv1.3;
 ssl_ciphers TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256;
@@ -588,22 +471,18 @@ ssl_conf_command Curves {groups_str};
 # Fallback to classical curves ensured by leading X25519,P-256
 # server_name {host};
 # listen {port} ssl;
-        """.strip()
-
-        templates["haproxy.cfg"] = f"""
+""".strip(),
+            "haproxy.cfg": f"""
 # HAProxy example (build with OpenSSL supporting hybrid groups)
 global
     tune.ssl.default-dh-param 2048
-
 frontend https-in
     bind *:{port} ssl crt /path/to/cert.pem curves {groups_str}
     default_backend app
-
 backend app
     server s1 127.0.0.1:8080
-        """.strip()
-
-        templates["policy-as-code.yaml"] = f"""
+""".strip(),
+            "policy-as-code.yaml": f"""
 apiVersion: pqc.security/v1
 kind: TLSPolicy
 metadata:
@@ -631,8 +510,8 @@ spec:
         pauseSeconds: 1800
       - weight: 100
         pauseSeconds: 0
-        """.strip()
-        return templates
+""".strip(),
+        }
 
     def canary_plan(self, targets: List[str]) -> Dict[str, Any]:
         plan = {
@@ -698,28 +577,20 @@ spec:
         return "needs-remediation"
 
     def sign_and_log_report(self, readiness_report: Dict[str, Any], log_path: Path, key_dir: Path) -> Dict[str, Any]:
-        # "Sigstore"-like simulation using KMS/HSM
         kms = SimulatedKMS(key_dir)
         payload_bytes = json.dumps(readiness_report, sort_keys=True).encode()
         signature = kms.sign(payload_bytes)
-        entry = {
-            "report": readiness_report,
-            "signature": signature,
-            "signing_method": "sigstore-simulated",
-        }
-        tlog = TransparencyLog(log_path)
-        wrapped = tlog.append(entry)
+        entry = {"report": readiness_report, "signature": signature, "signing_method": "sigstore-simulated"}
+        wrapped = TransparencyLog(log_path).append(entry)
         return wrapped
 
     def verify_transparency_log(self, log_path: Path) -> Dict[str, Any]:
-        # Verify hash chain and signatures for entries
         tlog = TransparencyLog(log_path)
         chain_result = tlog.verify()
         result = {"hash_chain_ok": chain_result["ok"], "entries": chain_result["entries"], "signature_checks": []}
         if not chain_result["ok"]:
             result["error"] = chain_result["error"]
             return result
-        kms = SimulatedKMS(Path.home() / ".pq_migrate_auditor")
         try:
             with open(log_path, "r", encoding="utf-8") as f:
                 for line in f:
@@ -730,7 +601,7 @@ spec:
                     signature = entry.get("signature", {})
                     report = entry.get("report", {})
                     payload_bytes = json.dumps(report, sort_keys=True).encode()
-                    ok = kms.verify(payload_bytes, signature)
+                    ok = SimulatedKMS.verify_any(payload_bytes, signature)
                     result["signature_checks"].append({"timestamp": wrapped.get("timestamp"), "ok": ok})
         except Exception as e:
             result["error"] = str(e)
@@ -738,7 +609,6 @@ spec:
 
 
 def parse_targets_arg(arg: str) -> List[str]:
-    # Accept comma-separated list or file path
     if not arg:
         return []
     p = Path(arg)
