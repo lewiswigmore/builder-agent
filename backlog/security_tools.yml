@@ -1149,7 +1149,7 @@ security_tools:
     heuristics (lip-sync mismatch, spectral artifacts) and emit a signed, timestamped
     policy decision.
   ready: true
-  status: in_progress
+  status: needs_work
   area_allowlist:
   - tools/ai_security/deepfake_provenance_sentinel.py
   - tests/test_ai_security_008.py
