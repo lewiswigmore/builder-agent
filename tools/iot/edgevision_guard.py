@@ -17,7 +17,7 @@ import time
 import zipfile
 from typing import Dict, List, Optional, Tuple
 
-VERSION = "1.0.1"
+VERSION = "1.0.2"
 
 __all__ = [
     "EdgeVisionGuard",
@@ -441,8 +441,8 @@ def deterministic_zip(zip_path: str, files: List[Tuple[str, str]]):
 
 class EdgeVisionGuard:
     def __init__(self, operator: str, consent: bool, outdir: str, hmac_key: Optional[str] = None):
-        if not consent:
-            raise ConsentRequiredError("Explicit operator consent is required for any live device interaction.")
+        # Consent is required only for live device interaction (e.g., emulation).
+        self.consent = bool(consent)
         self.operator = operator or getpass.getuser()
         self.outdir = outdir
         ensure_dir(outdir)
@@ -522,6 +522,8 @@ class EdgeVisionGuard:
         return report
 
     def emulate_runtime(self, device_config: Optional[str] = None, allowed_endpoints: Optional[List[str]] = None, test_duration: int = 5) -> Dict[str, object]:
+        if not self.consent:
+            raise ConsentRequiredError("Explicit operator consent is required before any live device interaction.")
         self._log("Starting runtime emulation in microsegmented sandbox.")
         sb = Sandbox(allowed_hosts=allowed_endpoints or [], rate_limit=10.0)
         endpoints = []
