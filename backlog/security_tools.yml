@@ -1206,7 +1206,7 @@ security_tools:
     and signatures) that passes independent verification and integrity checks on a
     separate system.
   ready: true
-  status: todo
+  status: in_progress
   area_allowlist:
   - tools/forensics/trustanchor_forensic_attestor.py
   - tests/test_forensics_005.py
