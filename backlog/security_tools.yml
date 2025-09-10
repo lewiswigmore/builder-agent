@@ -1149,7 +1149,7 @@ security_tools:
     heuristics (lip-sync mismatch, spectral artifacts) and emit a signed, timestamped
     policy decision.
   ready: true
-  status: todo
+  status: needs_work
   area_allowlist:
   - tools/ai_security/deepfake_provenance_sentinel.py
   - tests/test_ai_security_008.py
@@ -1632,4 +1632,85 @@ security_tools:
   area_allowlist:
   - tools/iot/lpwan_guard.py
   - tests/test_iot_006.py
+  max_changed_lines: 500
+- id: CLOUD-013
+  title: 'MeshGuard: Service Mesh Identity & Egress Drift Auditor'
+  category: cloud
+  description: Continuously audits Kubernetes service meshes (Istio/Linkerd/Kuma)
+    for mTLS/SPIFFE identity drift, egress bypasses, and policy regressions; deploys
+    namespaced canary workloads, validates SDS cert chains, and enforces policy-as-code
+    with signed attestations.
+  security_requirements:
+  - Zero-impact, namespace-scoped canary deployments with deny-by-default egress and
+    time-bounded credentials.
+  - Read-only access to cluster resources; no disruptive policy changes without dry-run
+    and explicit approval.
+  - Signed, immutable logs and attestations (Sigstore/Rekor) with privacy-preserving
+    metadata.
+  acceptance_tests:
+  - Detects misconfigured AuthorizationPolicy allowing unintended cross-namespace
+    calls; emits finding with call graph and SPIFFE IDs.
+  - Identifies egress traffic bypassing the mesh via node-level routes and flags workloads
+    lacking sidecars; recommends NetworkPolicy and egress gateway fixes.
+  - Validates SDS-issued cert rotation continuity and raises alert on trust bundle
+    drift or expiration within a configurable threshold.
+  ready: true
+  status: todo
+  area_allowlist:
+  - tools/cloud/meshguard.py
+  - tests/test_cloud_013_meshguard.py
+  max_changed_lines: 500
+- id: AI_SECURITY-014
+  title: 'EmbeddingLeak Auditor: Vector DB Inversion & Tenant Isolation Tester'
+  category: ai_security
+  description: Assesses vector databases (Pinecone/Weaviate/FAISS/OpenSearch) and
+    RAG services for embedding inversion, membership inference, and cross-tenant data
+    leakage; seeds signed canary embeddings, runs black-box inversion probes, and
+    enforces isolation policies with reproducible attestations.
+  security_requirements:
+  - Operates only on approved test datasets with seeded canaries; no extraction from
+    unowned tenants or production PII.
+  - All attack simulations are rate-limited, logged, and sandboxed with network egress
+    allowlists.
+  - Results and SBOM/provenance for clients/SDKs are signed and anchored to transparency
+    logs.
+  acceptance_tests:
+  - Successfully detects cross-namespace index exposure via mis-scoped API keys and
+    confirms inability after policy fix.
+  - Recovers seeded canary text from embeddings above a configured similarity threshold
+    and seals an evidence bundle.
+  - Flags an embedding API that returns training-time metadata enabling membership
+    inference; provides redaction and configuration hardening recommendations.
+  ready: true
+  status: todo
+  area_allowlist:
+  - tools/ai_security/embedding_leak_auditor.py
+  - tests/test_ai_security_014_embedding_leak.py
+  max_changed_lines: 500
+- id: FORENSICS-007
+  title: 'WebWorkspace Forensic Collector: Browser Runtime Artifact Sealer'
+  category: forensics
+  description: 'Performs live, low-impact acquisition of browser/webapp runtime artifacts
+    via the DevTools Protocol: service worker/CacheStorage, IndexedDB, localStorage,
+    WASM modules, and WebRTC signaling/ICE fingerprints; produces cryptographically
+    sealed, court-ready bundles.'
+  security_requirements:
+  - Attaches in read-only, throttle-safe mode to prevent script execution changes;
+    no JS injection beyond DevTools fetch/DOM snapshot APIs.
+  - Cryptographic sealing with timestamping and chain-of-custody metadata; reproducible
+    acquisition playbooks.
+  - PII minimization and structured redaction options for cookies/tokens unless explicitly
+    authorized.
+  acceptance_tests:
+  - Captures service worker scripts and CacheStorage entries from a target origin
+    and verifies hash consistency across two passes.
+  - Extracts IndexedDB schema and records, redacts configured key patterns (e.g.,
+    auth tokens), and emits a signed manifest.
+  - Records WebRTC SDP offers/ICE candidates from a live session without media capture
+    and correlates with network flow metadata.
+  ready: true
+  status: todo
+  area_allowlist:
+  - tools/forensics/webworkspace_collector.py
+  - tests/test_forensics_007_webworkspace.py
   max_changed_lines: 500
