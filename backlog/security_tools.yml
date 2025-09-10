@@ -1177,7 +1177,7 @@ security_tools:
     identity and JA3/JA4 fingerprints shift mid-session, producing a high-confidence
     alert.
   ready: true
-  status: todo
+  status: in_progress
   area_allowlist:
   - tools/network/dnscovert_hunter.py
   - tests/test_network_003.py
