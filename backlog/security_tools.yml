@@ -1177,7 +1177,7 @@ security_tools:
     identity and JA3/JA4 fingerprints shift mid-session, producing a high-confidence
     alert.
   ready: true
-  status: todo
+  status: needs_work
   area_allowlist:
   - tools/network/dnscovert_hunter.py
   - tests/test_network_003.py
@@ -1713,4 +1713,98 @@ security_tools:
   area_allowlist:
   - tools/forensics/webworkspace_collector.py
   - tests/test_forensics_007_webworkspace.py
+  max_changed_lines: 500
+- id: AI_SECURITY-015
+  title: 'WeightWatch: Model Artifact Exfiltration & Registry Leak Hunter'
+  category: ai_security
+  description: Monitors and gates model artifact flows across registries (HuggingFace/S3/Artifact
+    Registries) to detect unsigned weights, tag drift, abnormal pull patterns, and
+    covert exfiltration. Seeds signed canary weight shards/watermarks, verifies Sigstore/cosign
+    attestations, correlates egress logs with CI/CD provenance, and quarantines risky
+    repositories with signed, reproducible alerts.
+  security_requirements:
+  - Operate with read-only scopes and scoped honey tokens; never alter production
+    artifacts outside quarantined namespaces.
+  - Verify all artifacts and promotions via Sigstore/cosign signatures and in-toto/SLSA
+    attestations; block unsigned or provenance-missing tags.
+  - Minimize data collection (no weight content storage); store only hashes, metadata,
+    and signed audit trails with immutable timestamping.
+  acceptance_tests:
+  - Simulate an anomalous surge of pulls for a protected model tag from an unknown
+    IP/identity; tool detects rate/geo/profile deviation, confirms missing/invalid
+    signatures, and emits a signed incident bundle while temporarily quarantining
+    the tag.
+  - Seed a signed canary shard in a private bucket and attempt retrieval from a disallowed
+    CIDR; tool detects access, validates the canary watermark, revokes the scoped
+    token, and anchors the alert to transparency logs.
+  - Attempt to promote an unsigned model revision to 'stable' in the registry; policy
+    gate blocks promotion, citing failed cosign verification and missing in-toto provenance,
+    with a remediation diff.
+  ready: true
+  status: todo
+  area_allowlist:
+  - tools/ai_security/weightwatch.py
+  - tests/test_ai_security_015.py
+  max_changed_lines: 500
+- id: CLOUD-014
+  title: 'GPUShield: Cloud GPU Isolation & Remanence Auditor'
+  category: cloud
+  description: Continuously validates GPU tenancy isolation (MIG/MPS/SR-IOV) and data
+    remanence hygiene across multi-cloud fleets. Orchestrates controlled jobs that
+    write signed canary patterns, then performs post-teardown VRAM/BAR1 residue scans,
+    driver/firmware drift checks, device-plugin posture audits, and eBPF-lite telemetry
+    correlation to detect cross-tenant leakage and misconfigurations.
+  security_requirements:
+  - Run canary workloads in isolated test namespaces/projects with enforced quotas
+    and automated cleanup; never disrupt production training jobs.
+  - Collect only integrity hashes, timing, and residue indicators; no capture of customer
+    model/data content beyond synthetic canaries.
+  - Produce signed attestations (Rekor anchoring) for each audit with reproducible
+    environment manifests and hardware/driver fingerprints.
+  acceptance_tests:
+  - Launch two isolated tenants on shared GPUs with MIG enabled; write a canary pattern
+    in tenant A, tear down, then scan from tenant B. No residue should be detected;
+    any match triggers a critical leakage finding with signed evidence.
+  - Detect GPU driver/firmware drift from baseline (e.g., vulnerable branch enabling
+    MPS mixed security mode); generate policy-as-code remediation and prevent autoscaling
+    nodes from admission until compliant.
+  - Validate device-plugin hardening (no hostPath escape, proper cgroup/IOCTL filters);
+    simulate a misconfiguration and confirm the auditor blocks risky scheduling and
+    emits a detailed posture report.
+  ready: true
+  status: todo
+  area_allowlist:
+  - tools/cloud/gpushield.py
+  - tests/test_cloud_014.py
+  max_changed_lines: 500
+- id: NET-005
+  title: 'WebRTC Covert Channel Hunter: STUN/TURN Abuse & P2P Exfil IDS'
+  category: network
+  description: "A privacy-preserving IDS for detecting covert exfiltration over WebRTC.\
+    \ Profiles ICE candidate patterns, STUN/TURN server fingerprints, DTLS-SRTP handshakes,\
+    \ DataChannel timing/size entropy, and relay vs. direct flows to flag domain-fronted\
+    \ TURN abuse, phantom signaling, and long-lived headless P2P tunnels\u2014without\
+    \ decrypting payloads."
+  security_requirements:
+  - Perform metadata-only analysis (no media/content decryption) and hash/anonymize
+    identifiers to preserve user privacy.
+  - Maintain allowlists for sanctioned STUN/TURN and conferencing domains; adaptive
+    baselining to minimize false positives.
+  - Emit signed, forensically sound alerts with JA4/JA4S-like fingerprints, flow statistics,
+    and reproducible detection rationale.
+  acceptance_tests:
+  - Replay traffic with long-lived TURN-relayed DTLS-SRTP carrying high-entropy, uniform-sized
+    DataChannel frames to unsanctioned endpoints; tool flags covert exfil pattern
+    and generates a signed incident report.
+  - Initiate a normal corporate video call using approved STUN/TURN; ensure flows
+    are baselined and not alerted after allowlist learning period, demonstrating low
+    false positives.
+  - Simulate domain-fronted TURN over TLS:443 to a non-approved IP range with atypical
+    ICE retries and candidate churn; detector correlates fingerprints and raises an
+    escalation with remediation guidance.
+  ready: true
+  status: todo
+  area_allowlist:
+  - tools/network/webrtc_covert_hunter.py
+  - tests/test_net_005.py
   max_changed_lines: 500
