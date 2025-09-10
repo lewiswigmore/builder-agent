@@ -1120,7 +1120,7 @@ security_tools:
     endpoints, block connections within the sandbox, and generate a signed incident
     report.
   ready: true
-  status: todo
+  status: in_progress
   area_allowlist:
   - tools/iot/edgevision_guard.py
   - tests/test_iot_edgevision_guard.py
