@@ -17,7 +17,28 @@ import time
 import zipfile
 from typing import Dict, List, Optional, Tuple
 
-VERSION = "1.0.0"
+VERSION = "1.0.1"
+
+__all__ = [
+    "EdgeVisionGuard",
+    "ConsentRequiredError",
+    "EvidenceIntegrityError",
+    "FirmwareParseError",
+    "verify_evidence_bundle",
+]
+
+# Custom exceptions expected by tests/consumers
+class ConsentRequiredError(PermissionError):
+    pass
+
+
+class EvidenceIntegrityError(Exception):
+    pass
+
+
+class FirmwareParseError(Exception):
+    pass
+
 
 # Offline minimal CVE mapping for demo/acceptance. Extend as needed.
 CVE_DB = {
@@ -90,14 +111,17 @@ ETHICS_BANNER = (
     "No live device interaction will proceed without consent.\n"
 )
 
+
 def mask_pii(text: str) -> str:
     masked = text
     for pat, repl in PII_PATTERNS:
         masked = pat.sub(repl, masked)
     return masked
 
+
 def sha256_bytes(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
+
 
 def sha256_file(path: str) -> str:
     h = hashlib.sha256()
@@ -106,14 +130,18 @@ def sha256_file(path: str) -> str:
             h.update(chunk)
     return h.hexdigest()
 
+
 def hmac_sign(data: bytes, key: bytes) -> str:
     return hmac.new(key, data, hashlib.sha256).hexdigest()
+
 
 def canonical_json(obj) -> bytes:
     return json.dumps(obj, sort_keys=True, separators=(",", ":")).encode("utf-8")
 
+
 def ensure_dir(path: str):
     os.makedirs(path, exist_ok=True)
+
 
 def ascii_strings(data: bytes, min_len: int = 4) -> List[str]:
     res = []
@@ -129,6 +157,7 @@ def ascii_strings(data: bytes, min_len: int = 4) -> List[str]:
     if len(buff) >= min_len:
         res.append("".join(buff))
     return res
+
 
 def read_archive_strings(path: str, max_bytes: int = 2_000_000) -> List[str]:
     strings = []
@@ -163,6 +192,7 @@ def read_archive_strings(path: str, max_bytes: int = 2_000_000) -> List[str]:
         pass
     return list(set(strings))
 
+
 def extract_sbom(strings: List[str]) -> List[Dict[str, str]]:
     components = {}
     for s in strings:
@@ -179,6 +209,7 @@ def extract_sbom(strings: List[str]) -> List[Dict[str, str]]:
                         "source": s[:200],
                     }
     return list(components.values())
+
 
 def correlate_cves(sbom: List[Dict[str, str]]) -> List[Dict[str, object]]:
     findings = []
@@ -201,6 +232,7 @@ def correlate_cves(sbom: List[Dict[str, str]]) -> List[Dict[str, object]]:
             "severity": "high" if cves else "none",
         })
     return findings
+
 
 def detect_hardcoded_credentials(strings: List[str]) -> List[Dict[str, str]]:
     results = []
@@ -254,6 +286,7 @@ def detect_hardcoded_credentials(strings: List[str]) -> List[Dict[str, str]]:
             unique.append(e)
     return unique
 
+
 def recommended_mitigations(creds_found: List[Dict[str, str]], cves: List[Dict[str, object]]) -> List[str]:
     recs = []
     if creds_found:
@@ -265,6 +298,7 @@ def recommended_mitigations(creds_found: List[Dict[str, str]], cves: List[Dict[s
         recs.append("Implement SBOM-based continuous monitoring and vulnerability management for dependencies.")
     recs.append("Enable secure boot and signed firmware updates to prevent tampering.")
     return recs
+
 
 def spectral_signature_summary(data: bytes) -> Dict[str, object]:
     # Lightweight byte-frequency and entropy analysis
@@ -289,6 +323,7 @@ def spectral_signature_summary(data: bytes) -> Dict[str, object]:
         )[:10],
     }
 
+
 def load_eval_predictions(eval_path: Optional[str]) -> Optional[Dict[str, Dict[str, float]]]:
     if not eval_path:
         return None
@@ -300,6 +335,7 @@ def load_eval_predictions(eval_path: Optional[str]) -> Optional[Dict[str, Dict[s
     except Exception:
         return None
     return None
+
 
 def compute_confidence_shift(clean: Dict[str, float], trigger: Dict[str, float]) -> Dict[str, object]:
     keys = set(clean) | set(trigger)
@@ -315,6 +351,7 @@ def compute_confidence_shift(clean: Dict[str, float], trigger: Dict[str, float])
         "top_increases": top_pos,
         "top_decreases": top_neg,
     }
+
 
 def derive_saliency_from_patch(trigger_patch: Optional[str]) -> Dict[str, object]:
     # Represent saliency as coarse grid heat values from a textual mask spec like "x10,y10,w20,h20"
@@ -339,6 +376,7 @@ def derive_saliency_from_patch(trigger_patch: Optional[str]) -> Dict[str, object
         "heatmap_ascii": ["".join("#" if v else "." for v in row) for row in heat],
     }
 
+
 class RateLimiter:
     def __init__(self, rate_per_sec: float):
         self.rate = max(0.1, rate_per_sec)
@@ -350,6 +388,7 @@ class RateLimiter:
         if delay > 0:
             time.sleep(delay)
         self.last = time.monotonic()
+
 
 class Sandbox:
     def __init__(self, allowed_hosts: Optional[List[str]] = None, rate_limit: float = 5.0):
@@ -380,7 +419,11 @@ class Sandbox:
     def write_pcap_ndjson(self, path: str):
         with open(path, "w", encoding="utf-8") as f:
             for e in self.events:
-                f.write(json.dumps(e) + "\n")
+                e_masked = dict(e)
+                # Respect privacy for stored logs (mask PII like IPs)
+                e_masked["dst"] = mask_pii(e_masked.get("dst", ""))
+                f.write(json.dumps(e_masked) + "\n")
+
 
 def deterministic_zip(zip_path: str, files: List[Tuple[str, str]]):
     # files: list of (arcname, realpath)
@@ -395,10 +438,11 @@ def deterministic_zip(zip_path: str, files: List[Tuple[str, str]]):
             info.compress_type = zipfile.ZIP_DEFLATED
             z.writestr(info, data)
 
+
 class EdgeVisionGuard:
     def __init__(self, operator: str, consent: bool, outdir: str, hmac_key: Optional[str] = None):
         if not consent:
-            raise PermissionError("Explicit operator consent is required for any live device interaction.")
+            raise ConsentRequiredError("Explicit operator consent is required for any live device interaction.")
         self.operator = operator or getpass.getuser()
         self.outdir = outdir
         ensure_dir(outdir)
@@ -414,7 +458,12 @@ class EdgeVisionGuard:
 
     def analyze_firmware(self, firmware_path: str) -> Dict[str, object]:
         self._log(f"Analyzing firmware image: {firmware_path}")
-        strings = read_archive_strings(firmware_path)
+        if not os.path.exists(firmware_path):
+            raise FirmwareParseError(f"Firmware image not found: {firmware_path}")
+        try:
+            strings = read_archive_strings(firmware_path)
+        except Exception as e:
+            raise FirmwareParseError(f"Failed to parse firmware image: {e}") from e
         sbom = extract_sbom(strings)
         cves = correlate_cves(sbom)
         creds = detect_hardcoded_credentials(strings)
@@ -434,6 +483,8 @@ class EdgeVisionGuard:
 
     def analyze_model(self, model_path: str, eval_path: Optional[str] = None, trigger_patch: Optional[str] = None) -> Dict[str, object]:
         self._log(f"Analyzing model: {model_path}")
+        if not os.path.exists(model_path):
+            raise FileNotFoundError(f"Model not found: {model_path}")
         with open(model_path, "rb") as f:
             data = f.read()
         spec = spectral_signature_summary(data)
@@ -605,6 +656,10 @@ class EdgeVisionGuard:
             "signature": sig_obj,
         }
 
+    def verify_evidence_bundle(self, bundle_path: str, hmac_key: str) -> Dict[str, object]:
+        return verify_evidence_bundle(bundle_path, hmac_key)
+
+
 def parse_args():
     p = argparse.ArgumentParser(description="EdgeVision Guard: Smart Camera Model Backdoor & Egress Auditor")
     sub = p.add_subparsers(dest="cmd")
@@ -640,13 +695,69 @@ def parse_args():
     pb.add_argument("--hmac-key", help="HMAC key for signing manifest")
     pb.add_argument("--case-id", help="Case identifier")
 
+    pv = sub.add_parser("verify", help="Verify sealed evidence bundle")
+    pv.add_argument("--bundle", required=True, help="Path to bundle zip to verify")
+    pv.add_argument("--hmac-key", required=True, help="HMAC key used for signing")
+
     return p.parse_args()
+
+
+def verify_evidence_bundle(bundle_path: str, hmac_key: str) -> Dict[str, object]:
+    if not os.path.exists(bundle_path):
+        raise FileNotFoundError(f"Bundle not found: {bundle_path}")
+    key_bytes = (hmac_key or "").encode("utf-8")
+    try:
+        with zipfile.ZipFile(bundle_path, "r") as z:
+            try:
+                manifest_raw = z.read("manifest.json")
+                sig_raw = z.read("manifest.sig")
+            except KeyError as e:
+                raise EvidenceIntegrityError(f"Missing required file in bundle: {e}") from e
+            # Verify signature over canonical manifest
+            manifest_obj = json.loads(manifest_raw.decode("utf-8"))
+            manifest_bytes = canonical_json(manifest_obj)
+            sig_obj = json.loads(sig_raw.decode("utf-8"))
+            expected_sig = sig_obj.get("signature")
+            if not expected_sig:
+                raise EvidenceIntegrityError("No signature present in manifest.sig")
+            calc_sig = hmac_sign(manifest_bytes, key_bytes)
+            if not hmac.compare_digest(expected_sig, calc_sig):
+                raise EvidenceIntegrityError("Manifest signature verification failed")
+            # Verify file hashes listed in manifest
+            files_info = manifest_obj.get("files", [])
+            mismatches = []
+            verified_files = 0
+            for entry in files_info:
+                arc = entry["path"]
+                expected_sha = entry["sha256"]
+                try:
+                    data = z.read(arc)
+                except KeyError:
+                    mismatches.append({"path": arc, "error": "missing_in_bundle"})
+                    continue
+                actual_sha = sha256_bytes(data)
+                if actual_sha != expected_sha:
+                    mismatches.append({"path": arc, "error": "sha256_mismatch"})
+                else:
+                    verified_files += 1
+            return {
+                "verified": len(mismatches) == 0,
+                "verified_files": verified_files,
+                "mismatches": mismatches,
+                "manifest_key_id": sig_obj.get("key_id"),
+                "alg": sig_obj.get("alg"),
+            }
+    except EvidenceIntegrityError:
+        raise
+    except Exception as e:
+        raise EvidenceIntegrityError(f"Unable to verify bundle: {e}") from e
+
 
 def main():
     args = parse_args()
     if not args.cmd:
         print(ETHICS_BANNER)
-        print("Use subcommands: firmware, model, emulate, bundle")
+        print("Use subcommands: firmware, model, emulate, bundle, verify")
         return
     if args.cmd == "firmware":
         g = EdgeVisionGuard(operator=args.operator, consent=args.consent, outdir=args.out)
@@ -665,6 +776,10 @@ def main():
         g = EdgeVisionGuard(operator=args.operator, consent=args.consent, outdir=args.outdir, hmac_key=args.hmac_key)
         info = g.build_evidence_bundle(args.bundle, case_id=args.case_id)
         print(json.dumps({"bundle": info["bundle_path"], "sha256": info["sha256"]}, indent=2))
+    elif args.cmd == "verify":
+        result = verify_evidence_bundle(args.bundle, args.hmac_key)
+        print(json.dumps(result, indent=2))
+
 
 if __name__ == "__main__":
     main()
