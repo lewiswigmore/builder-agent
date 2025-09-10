@@ -620,6 +620,131 @@ class Sealer:
         return results
 
 
+class TrustAnchorForensicAttestor:
+    """
+    Programmatic API wrapper for the TrustAnchor Forensic Attestor.
+    Provides acquisition, verification, and sealing methods.
+    """
+    def __init__(self, tsa_url: Optional[str] = None, sign_key: Optional[Path] = None, sign_cert: Optional[Path] = None,
+                 sign_chain: Optional[Path] = None, pinned_ek_ca: Optional[Path] = None, tsa_ca: Optional[Path] = None):
+        self.caps = CapabilityDetector()
+        self.tsa_url = tsa_url
+        self.sign_key = sign_key
+        self.sign_cert = sign_cert
+        self.sign_chain = sign_chain
+        self.pinned_ek_ca = pinned_ek_ca
+        self.tsa_ca = tsa_ca
+
+    @staticmethod
+    def generate_nonce(length: int = 24) -> bytes:
+        if length < 16:
+            raise AttestorError("Nonce length too short")
+        return os.urandom(length)
+
+    def detect_capabilities(self) -> Dict[str, bool]:
+        return self.caps.summary()
+
+    def acquire_tpm_evidence(self, nonce: bytes, pcrs: Optional[List[int]] = None, workdir: Optional[Path] = None) -> Tuple[Dict, Dict[str, str]]:
+        if not detect_linux():
+            raise AttestorError("Linux required for TPM evidence collection")
+        if not self.caps.has_tpm():
+            raise AttestorError("TPM capability/tools not available")
+        if pcrs is None:
+            pcrs = list(range(0, 8))
+        wd = workdir or Path(tempfile.mkdtemp(prefix="trustanchor_api_tpm_"))
+        collector = TPMCollector(self.caps, wd, pcrs, nonce, self.pinned_ek_ca)
+        collector.collect()
+        artifacts = {}
+        for k in ["ak_pub", "ak_name", "quote_attest", "quote_sig", "ek_cert", "pcr_json", "pcr_yaml", "eventlog_json", "reconstructed_pcr_json", "checkquote_report"]:
+            v = collector.result.get(k)
+            if v:
+                artifacts[k] = v
+        return collector.result, artifacts
+
+    def acquire_tee_evidence(self, nonce: bytes, attest_url: Optional[str] = None, api_key: Optional[str] = None,
+                             require_tee: bool = False, workdir: Optional[Path] = None) -> Tuple[Dict, Dict[str, str]]:
+        if not detect_linux():
+            raise AttestorError("Linux required for TEE evidence collection")
+        wd = workdir or Path(tempfile.mkdtemp(prefix="trustanchor_api_tee_"))
+        tee = TEECollector(self.caps, wd, nonce, attest_url, api_key)
+        tee.collect(require_tee=require_tee)
+        artifacts = {}
+        for k in ["tdx_report", "snp_report", "attestation_response"]:
+            v = tee.result.get(k)
+            if v:
+                artifacts[k] = v
+        return tee.result, artifacts
+
+    def seal_bundle(self, artifacts: Dict[str, str], meta: Dict, out_dir: Path, workdir: Optional[Path] = None) -> Dict:
+        wd = workdir or Path(tempfile.mkdtemp(prefix="trustanchor_api_seal_"))
+        sealer = Sealer(
+            caps=self.caps,
+            workdir=wd,
+            out_dir=out_dir,
+            tsa_url=self.tsa_url or "",
+            tsa_ca=self.tsa_ca,
+            sign_key=self.sign_key,
+            sign_cert=self.sign_cert,
+            sign_chain=self.sign_chain
+        )
+        return sealer.seal(artifacts, meta)
+
+    @staticmethod
+    def verify_bundle(bundle_dir: Path, tsa_ca: Optional[Path] = None) -> Dict:
+        return Sealer.verify_bundle(bundle_dir, tsa_ca)
+
+    def run_full(self, out_dir: Path, nonce: bytes, pcrs: Optional[List[int]] = None, tee_required: bool = False,
+                 tee_attest_url: Optional[str] = None, tee_attest_api_key: Optional[str] = None) -> Dict:
+        ensure_dir(out_dir)
+        caps_summary = self.caps.summary()
+        workdir = Path(tempfile.mkdtemp(prefix="trustanchor_api_run_"))
+        try:
+            # TPM
+            tpm_result, tpm_artifacts = self.acquire_tpm_evidence(nonce=nonce, pcrs=pcrs or list(range(0, 8)), workdir=workdir)
+            # TEE
+            tee_result, tee_artifacts = self.acquire_tee_evidence(nonce=nonce, attest_url=tee_attest_url, api_key=tee_attest_api_key, require_tee=tee_required, workdir=workdir)
+
+            ver_errs = []
+            if not tpm_result["verification"]["pcr_reconstruction_ok"]:
+                ver_errs.append("TPM PCR reconstruction failed")
+            if not tpm_result["verification"]["quote_signature_ok"]:
+                ver_errs.append("TPM quote signature verification failed")
+            if not tpm_result["verification"]["ek_chain_ok"]:
+                ver_errs.append("EK chain validation failed (provide pinned EK CA)")
+            if tee_required and not tee_result["verification"]["attestation_ok"]:
+                ver_errs.append("TEE attestation verification failed")
+            if ver_errs:
+                raise AttestorError(" | ".join(ver_errs))
+
+            artifacts = {}
+            artifacts.update(tpm_artifacts)
+            artifacts.update(tee_artifacts)
+
+            meta = {
+                "capabilities": caps_summary,
+                "tpm_verification": tpm_result["verification"],
+                "tee_verification": tee_result["verification"],
+                "nonce_b64": base64.b64encode(nonce).decode(),
+                "pcrs": pcrs or list(range(0, 8)),
+                "timestamps": {"start": now_utc_iso()},
+            }
+
+            seal_info = self.seal_bundle(artifacts=artifacts, meta=meta, out_dir=out_dir, workdir=workdir)
+            meta["timestamps"]["end"] = now_utc_iso()
+            return {
+                "status": "ok",
+                "bundle_dir": seal_info["bundle_dir"],
+                "final_chain_hex": seal_info["final_chain_hex"],
+                "tpm": {"verification": tpm_result["verification"]},
+                "tee": {"verification": tee_result["verification"]},
+            }
+        finally:
+            try:
+                shutil.rmtree(workdir, ignore_errors=True)
+            except Exception:
+                pass
+
+
 def parse_args():
     ap = argparse.ArgumentParser(description=f"{TOOL_NAME} v{TOOL_VERSION} - Authorized forensic acquisition only.")
     ap.add_argument("--out-dir", required=True, help="Output directory for the evidence bundle.")
