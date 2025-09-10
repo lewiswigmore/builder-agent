@@ -282,7 +282,7 @@ class PolicyConfig:
     # Require valid provenance for publishing
     require_provenance_for_publish: bool = True
     # Thresholds
-    watermark_inconsistency_action: str = "quarantine"  # flag/quarantine/block
+    watermark_inconsistency_action: str = "flag"  # flag/quarantine/block
     heuristics_block_threshold: float = 0.65
     # Signed attestation required
     require_signed_attestation: bool = True
@@ -295,7 +295,7 @@ class PolicyConfig:
         return PolicyConfig(
             egress_allowlist=data.get("egress_allowlist", []),
             require_provenance_for_publish=data.get("require_provenance_for_publish", True),
-            watermark_inconsistency_action=data.get("watermark_inconsistency_action", "quarantine"),
+            watermark_inconsistency_action=data.get("watermark_inconsistency_action", "flag"),
             heuristics_block_threshold=float(data.get("heuristics_block_threshold", 0.65)),
             require_signed_attestation=data.get("require_signed_attestation", True),
         )
