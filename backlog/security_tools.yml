@@ -1206,7 +1206,7 @@ security_tools:
     and signatures) that passes independent verification and integrity checks on a
     separate system.
   ready: true
-  status: todo
+  status: needs_work
   area_allowlist:
   - tools/forensics/trustanchor_forensic_attestor.py
   - tests/test_forensics_005.py
@@ -1807,4 +1807,89 @@ security_tools:
   area_allowlist:
   - tools/network/webrtc_covert_hunter.py
   - tests/test_net_005.py
+  max_changed_lines: 500
+- id: MOBILE-003
+  title: 'SDK Sentry: Mobile SDK Supply Chain Beacon & Permission Auditor'
+  category: mobile
+  description: Audits embedded mobile SDKs for covert data egress, overbroad permissions,
+    dynamic code loading, and tracker beacons. Combines static SBOM extraction and
+    signature verification with emulator-based dynamic instrumentation (e.g., Frida/LLDB)
+    to map runtime endpoints, seed signed canary identifiers, and emit sealed, reproducible
+    findings.
+  security_requirements:
+  - Operate in sandboxed emulators with network egress allowlists; never collect real
+    user PII or decrypt TLS without opt-in test certs.
+  - Generate SDK SBOMs (SPDX/CycloneDX), verify signatures and certificate pinning
+    bypass attempts, and correlate SDK versions with CVEs.
+  - Produce cryptographically signed, timestamped audit logs and evidence bundles;
+    preserve chain-of-custody with verifiable attestations.
+  acceptance_tests:
+  - Given an APK with a third-party analytics SDK, the tool identifies the SDK, builds
+    an SBOM, and flags overbroad location/contacts permissions with CVE correlations.
+  - During dynamic run, seeded canary identifiers are observed exfiltrating to a non-allowlisted
+    endpoint, resulting in a high-confidence alert with sealed network evidence.
+  - A benign app using approved SDKs and allowlisted domains completes analysis with
+    no high-severity findings and all logs pass signature verification.
+  ready: true
+  status: todo
+  area_allowlist:
+  - tools/mobile/sdk_sentry.py
+  - tests/test_mobile_003.py
+  max_changed_lines: 500
+- id: NET-006
+  title: 'HTTP/2 Abuse Hunter: Rapid Reset & Stream Flood Detector'
+  category: network
+  description: A privacy-preserving IDS that detects HTTP/2 Rapid Reset, stream multiplexing
+    floods, and SETTINGS/WINDOW_UPDATE abuse without decrypting payloads. Profiles
+    connection semantics, RST_STREAM bursts, and timing patterns, correlates JA3/JA4
+    fingerprints and WAF/CDN logs, and recommends targeted mitigations.
+  security_requirements:
+  - Passive, metadata-only collection (no payload decryption); minimize PII via hashing
+    of IPs/domains and configurable retention.
+  - Robust detection of RST_STREAM burst signatures, anomalous concurrency, and flow-control
+    abuse with tunable thresholds to reduce false positives.
+  - Emit signed, time-synchronized alerts with minimal PCAP snippets and header summaries
+    suitable for forensics and compliance reporting.
+  acceptance_tests:
+  - A replayed Rapid Reset trace triggers a high-confidence alert with evidence including
+    burst rate, stream IDs, and JA3/JA4 fingerprints.
+  - High-concurrency but benign HTTP/2 workload (e.g., multiplexed API traffic) does
+    not raise high-severity alerts under default thresholds.
+  - Integration with WAF logs correlates attacker IP/ASN and produces an actionable
+    mitigation recommendation (rate limit, rule signature) in the report.
+  ready: true
+  status: todo
+  area_allowlist:
+  - tools/network/http2_abuse_hunter.py
+  - tests/test_network_006.py
+  max_changed_lines: 500
+- id: FORENSICS-008
+  title: LLMChain Forensic Recorder & Evidence Sealer
+  category: forensics
+  description: 'On-demand capture and sealing of LLM application runtime artifacts:
+    prompts (redacted), tool invocations, retrieval sources, environment/process metadata,
+    and egress summaries. Provides framework hooks (OpenAI functions, LangChain, Semantic
+    Kernel), policy-based redaction/hashing, signed attestations, and court-ready
+    evidence bundles for prompt-injection and data exfiltration incidents.'
+  security_requirements:
+  - Apply strict redaction and salted hashing to sensitive fields; support allowlisted
+    leakage proofs via canary markers without exposing raw PII.
+  - Produce cryptographically sealed bundles with chained timestamps and verifiable
+    signatures; maintain immutable audit trails and chain-of-custody.
+  - Low-overhead instrumentation (middleware/SDK) with no credential harvesting; configurable
+    sampling and privacy budgets for production safety.
+  acceptance_tests:
+  - A simulated prompt-injection that triggers a tool egress attempt is fully recorded
+    (prompt hash, tool call, target URL), sealed, and later verified by signature
+    and timestamp continuity.
+  - Redaction policies replace sensitive fields with salted hashes while preserving
+    linkage across events; a verifier can match canary markers without reconstructing
+    plaintext.
+  - Middleware integration in a sample LangChain app adds less than a 5% latency overhead
+    and produces a complete, tamper-evident evidence bundle on demand.
+  ready: true
+  status: todo
+  area_allowlist:
+  - tools/forensics/llmchain_forensic_recorder.py
+  - tests/test_forensics_008.py
   max_changed_lines: 500
