@@ -1,24 +1,18 @@
 #!/usr/bin/env python3
 import argparse
-import base64
-import contextlib
 import dataclasses
 import hashlib
 import hmac
 import importlib.util
-import io
 import json
 import os
-import queue
 import random
 import re
 import shutil
-import signal
 import socket
 import string
 import subprocess
 import sys
-import tempfile
 import threading
 import time
 import types
@@ -37,34 +31,28 @@ ETHICAL_WARNING = (
     "you own or have explicit permission to audit. Misuse may violate laws and policies."
 )
 
-# -------------------- Policy Configuration -------------------- #
-
 @dataclasses.dataclass
 class Policy:
     require_provenance: bool = True
-    require_rekor: bool = False  # set True if Rekor CLI must validate
+    require_rekor: bool = False
     min_canary_confidence: float = 0.95
     dp_leak_rate_threshold: float = 0.01
     pii_rate_threshold: float = 0.02
-    membership_inference_threshold: float = 0.5  # risk score above -> quarantine
+    membership_inference_threshold: float = 0.5
     egress_allowlist: Tuple[str, ...] = ()
     cpu_limit_seconds: int = 300
     mem_limit_mb: int = 2048
     rate_limit_qps: int = 20
     batch_size: int = 50
 
-
-# -------------------- Utility Functions -------------------- #
-
 def log(msg: str) -> None:
     ts = time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime())
     print(f"[{ts}] {msg}", flush=True)
 
-
 def load_jsonl(path: Path, max_items: Optional[int] = None) -> List[Dict[str, Any]]:
     items = []
     with path.open("r", encoding="utf-8") as f:
-        for i, line in enumerate(f):
+        for line in f:
             if line.strip():
                 try:
                     items.append(json.loads(line))
@@ -74,36 +62,18 @@ def load_jsonl(path: Path, max_items: Optional[int] = None) -> List[Dict[str, An
                 break
     return items
 
-
 def write_jsonl(path: Path, rows: List[Dict[str, Any]]) -> None:
     with path.open("w", encoding="utf-8") as f:
         for r in rows:
             f.write(json.dumps(r, ensure_ascii=False) + "\n")
 
-
 def normalize_text(s: str) -> str:
     return re.sub(r"\s+", " ", s.strip().lower())
-
 
 def which(cmd: str) -> Optional[str]:
     return shutil.which(cmd)
 
-
-def safe_int(v: Any, default: int) -> int:
-    try:
-        return int(v)
-    except Exception:
-        return default
-
-
-def getenv_bool(name: str, default: bool = False) -> bool:
-    v = os.getenv(name)
-    if v is None:
-        return default
-    return v.lower() in ("1", "true", "yes", "on")
-
-
-# -------------------- Attestation & Signing -------------------- #
+# ---------- Attestation & Signing ----------
 
 class AttestationVerifier:
     def __init__(self, policy: Policy):
@@ -111,53 +81,25 @@ class AttestationVerifier:
         self.cosign_key = os.getenv("COSIGN_PUBLIC_KEY")
         self.rekor_cli = which("rekor-cli")
         self.cosign_cli = which("cosign")
-        self.in_toto_cli = which("in-toto-verify")
         self.hmac_key = os.getenv("SG_HMAC_KEY").encode("utf-8") if os.getenv("SG_HMAC_KEY") else None
 
     def verify_blob(self, artifact: Path, signature: Optional[Path] = None, attestation: Optional[Path] = None) -> Tuple[bool, Dict[str, Any]]:
-        evidence: Dict[str, Any] = {
-            "artifact": str(artifact),
-            "signature": str(signature) if signature else None,
-            "attestation": str(attestation) if attestation else None,
-            "methods": [],
-        }
+        evidence: Dict[str, Any] = {"artifact": str(artifact), "signature": str(signature) if signature else None, "methods": []}
         ok = False
-
-        # Method 1: cosign verify-blob
         if not ok and self.cosign_cli and signature and self.cosign_key:
             try:
-                cmd = [
-                    self.cosign_cli, "verify-blob",
-                    "--key", self.cosign_key,
-                    "--signature", str(signature),
-                    str(artifact),
-                ]
+                cmd = [self.cosign_cli, "verify-blob", "--key", self.cosign_key, "--signature", str(signature), str(artifact)]
                 res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, check=False)
-                evidence["methods"].append({"method": "cosign-verify-blob", "output": res.stdout, "returncode": res.returncode})
-                if res.returncode == 0:
-                    ok = True
+                evidence["methods"].append({"method": "cosign-verify-blob", "output": res.stdout, "rc": res.returncode})
+                ok = (res.returncode == 0)
             except Exception as e:
                 evidence["methods"].append({"method": "cosign-verify-blob", "error": str(e)})
-
-        # Method 2: in-toto verify (attestation layout) if provided
-        if not ok and self.in_toto_cli and attestation:
-            try:
-                # in-toto-verify expects a layout and keys, here we attempt a best-effort call
-                res = subprocess.run([self.in_toto_cli, "--layout", str(attestation)], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, check=False)
-                evidence["methods"].append({"method": "in-toto-verify", "output": res.stdout, "returncode": res.returncode})
-                if res.returncode == 0:
-                    ok = True
-            except Exception as e:
-                evidence["methods"].append({"method": "in-toto-verify", "error": str(e)})
-
-        # Method 3: HMAC fallback for blob signature (signature file is JSON with {"hmac": "<hex>"} or raw hex)
         if not ok and self.hmac_key and signature:
             try:
-                sig_hex = None
                 raw = signature.read_text(encoding="utf-8").strip()
+                sig_hex = None
                 try:
-                    data = json.loads(raw)
-                    sig_hex = data.get("hmac")
+                    sig_hex = json.loads(raw).get("hmac")
                 except Exception:
                     sig_hex = raw
                 if sig_hex:
@@ -166,11 +108,8 @@ class AttestationVerifier:
                     evidence["methods"].append({"method": "hmac-sha256", "expected": mac, "provided": sig_hex, "ok": ok})
             except Exception as e:
                 evidence["methods"].append({"method": "hmac-sha256", "error": str(e)})
-
-        # Optional: Rekor verification if required
         if ok and self.policy.require_rekor and self.rekor_cli and signature:
             try:
-                # Attempt to parse Rekor UUID from signature JSON if present
                 raw = signature.read_text(encoding="utf-8").strip()
                 entry_uuid = None
                 try:
@@ -180,7 +119,7 @@ class AttestationVerifier:
                     pass
                 if entry_uuid:
                     res = subprocess.run([self.rekor_cli, "get", "--uuid", entry_uuid], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, check=False)
-                    evidence["methods"].append({"method": "rekor-cli-get", "uuid": entry_uuid, "output": res.stdout, "returncode": res.returncode})
+                    evidence["methods"].append({"method": "rekor-cli-get", "uuid": entry_uuid, "output": res.stdout, "rc": res.returncode})
                     ok = ok and (res.returncode == 0)
                 else:
                     evidence["methods"].append({"method": "rekor-cli-get", "warning": "no UUID in signature payload"})
@@ -189,44 +128,34 @@ class AttestationVerifier:
             except Exception as e:
                 evidence["methods"].append({"method": "rekor-cli-get", "error": str(e)})
                 ok = False
-
         evidence["verified"] = ok
         return ok, evidence
 
     def sign_file(self, file_path: Path, out_sig: Path) -> Dict[str, Any]:
         evidence: Dict[str, Any] = {"file": str(file_path), "sig_out": str(out_sig), "methods": []}
         ok = False
-
-        # Prefer cosign sign-blob with key pair if available (COSIGN_PRIVATE_KEY)
         cosign_priv = os.getenv("COSIGN_PRIVATE_KEY")
         if self.cosign_cli and cosign_priv:
             try:
-                res = subprocess.run([self.cosign_cli, "sign-blob", "--key", cosign_priv, str(file_path), "--output-signature", str(out_sig)],
-                                     stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, check=False)
-                evidence["methods"].append({"method": "cosign-sign-blob", "output": res.stdout, "returncode": res.returncode})
-                if res.returncode == 0 and out_sig.exists():
-                    ok = True
+                res = subprocess.run([self.cosign_cli, "sign-blob", "--key", cosign_priv, str(file_path), "--output-signature", str(out_sig)], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, check=False)
+                evidence["methods"].append({"method": "cosign-sign-blob", "output": res.stdout, "rc": res.returncode})
+                ok = (res.returncode == 0 and out_sig.exists())
             except Exception as e:
                 evidence["methods"].append({"method": "cosign-sign-blob", "error": str(e)})
-
-        # HMAC fallback
         if not ok and self.hmac_key:
             mac = hmac.new(self.hmac_key, file_path.read_bytes(), hashlib.sha256).hexdigest()
             out_sig.write_text(json.dumps({"hmac": mac, "algo": "HMAC-SHA256"}), encoding="utf-8")
             evidence["methods"].append({"method": "hmac-sha256", "hmac": mac})
             ok = True
-
         evidence["signed"] = ok
         return evidence
 
-
-# -------------------- Canary Seeding -------------------- #
+# ---------- Canary Seeding ----------
 
 def generate_canary_token() -> str:
     alphabet = string.ascii_uppercase + string.digits
     rnd = ''.join(random.choice(alphabet) for _ in range(16))
     return f"CANARY-{rnd}-{uuid.uuid4().hex[:8]}"
-
 
 def seed_canaries(dataset_path: Path, out_path: Path, k: int = 100, field: str = "text") -> List[str]:
     rows = load_jsonl(dataset_path)
@@ -237,17 +166,14 @@ def seed_canaries(dataset_path: Path, out_path: Path, k: int = 100, field: str =
     write_jsonl(out_path, rows)
     return canaries
 
-
-# -------------------- PII/PHI Scanners -------------------- #
+# ---------- PII/PHI Scanners ----------
 
 PII_PATTERNS = [
-    re.compile(r"\b[0-9]{3}-[0-9]{2}-[0-9]{4}\b"),  # SSN
-    re.compile(r"\b(?:\+?1[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}\b"),  # US phone
-    re.compile(r"[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+"),  # email
-    re.compile(r"\b\d{16}\b"),  # simplistic CC
+    re.compile(r"\b[0-9]{3}-[0-9]{2}-[0-9]{4}\b"),
+    re.compile(r"\b(?:\+?1[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}\b"),
+    re.compile(r"[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+"),
     re.compile(r"\b\d{4}[-\s]\d{4}[-\s]\d{4}[-\s]\d{4}\b"),
 ]
-
 PHI_HINTS = [
     re.compile(r"\bdiagnos(e|is|ed|ing)\b", re.I),
     re.compile(r"\bprescription\b", re.I),
@@ -267,18 +193,16 @@ def scan_pii_phi(text: str) -> Dict[str, Any]:
     findings["phi_count"] = len(findings["phi"])
     return findings
 
-
-# -------------------- Sandbox Worker -------------------- #
+# ---------- Sandbox Worker ----------
 
 def _apply_limits_and_net(egress_allowlist: Tuple[str, ...], cpu_limit: int, mem_mb: int) -> None:
-    # Resource limits
     if HAS_RESOURCE:
         try:
             if cpu_limit > 0:
                 resource.setrlimit(resource.RLIMIT_CPU, (cpu_limit, cpu_limit))
             if mem_mb > 0:
                 bytes_limit = mem_mb * 1024 * 1024
-                for rname in ["RLIMIT_AS", "RLIMIT_DATA"]:
+                for rname in ("RLIMIT_AS", "RLIMIT_DATA"):
                     if hasattr(resource, rname):
                         r = getattr(resource, rname)
                         try:
@@ -287,18 +211,11 @@ def _apply_limits_and_net(egress_allowlist: Tuple[str, ...], cpu_limit: int, mem
                             pass
         except Exception:
             pass
-
-    # Network restrictions
     allowed = set([h.strip() for h in egress_allowlist if h.strip()])
     original_connect = socket.socket.connect
-
     def guarded_connect(self, address):
         try:
             host = address[0]
-            if ":" in host and host.count(":") > 1:
-                # IPv6 format or (host, port, flowinfo, scopeid)
-                host = host
-            # Resolve to hostname if it's an IP
             try:
                 resolved = socket.gethostbyaddr(host)[0]
             except Exception:
@@ -308,19 +225,14 @@ def _apply_limits_and_net(egress_allowlist: Tuple[str, ...], cpu_limit: int, mem
             return original_connect(self, address)
         except PermissionError:
             raise
-        except Exception as e:
+        except Exception:
             return original_connect(self, address)
-
     socket.socket.connect = guarded_connect  # type: ignore
-
-    # Disable proxies
     for k in list(os.environ.keys()):
         if k.upper().endswith("_PROXY") or k.upper() in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY"):
             os.environ.pop(k, None)
 
-
 def _import_plugin(plugin_path: str) -> types.ModuleType:
-    # Support module path or file path
     if os.path.isfile(plugin_path):
         spec = importlib.util.spec_from_file_location("synthguard_plugin", plugin_path)
         if spec is None or spec.loader is None:
@@ -328,48 +240,28 @@ def _import_plugin(plugin_path: str) -> types.ModuleType:
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)  # type: ignore
         return mod
-    else:
-        return importlib.import_module(plugin_path)
+    return importlib.import_module(plugin_path)
 
-
-def _worker_run(plugin_path: str,
-                dataset_path: str,
-                outputs_path: str,
-                n_samples: int,
-                batch_size: int,
-                qps: int,
-                egress_allowlist: Tuple[str, ...],
-                cpu_limit: int,
-                mem_mb: int) -> Dict[str, Any]:
+def _worker_run(plugin_path: str, dataset_path: str, outputs_path: str, n_samples: int, batch_size: int, qps: int, egress_allowlist: Tuple[str, ...], cpu_limit: int, mem_mb: int) -> Dict[str, Any]:
     _apply_limits_and_net(egress_allowlist, cpu_limit, mem_mb)
-
-    # Rate limiting
     tokens = threading.Semaphore(qps)
-
     def refill_tokens():
         while True:
             time.sleep(1.0)
-            for _ in range(qps - tokens._value):  # type: ignore
-                try:
+            try:
+                while tokens._value < qps:  # type: ignore
                     tokens.release()
-                except ValueError:
-                    break
-
+            except Exception:
+                pass
     threading.Thread(target=refill_tokens, daemon=True).start()
-
     mod = _import_plugin(plugin_path)
     if not hasattr(mod, "Generator"):
         raise RuntimeError("Plugin must expose a class named 'Generator'.")
-
     gen = mod.Generator()
-    # Train if method exists
     if hasattr(gen, "train"):
         gen.train(dataset_path)
-
-    out_file = Path(outputs_path)
-    out_f = out_file.open("w", encoding="utf-8")
-
-    generated_count = 0
+    out_f = Path(outputs_path).open("w", encoding="utf-8")
+    generated = 0
     meta: Dict[str, Any] = {"plugin_meta": {}, "membership_inference": None}
     if hasattr(gen, "metadata"):
         try:
@@ -379,47 +271,32 @@ def _worker_run(plugin_path: str,
                 meta["plugin_meta"] = gen.metadata()  # type: ignore
             except Exception:
                 meta["plugin_meta"] = {}
-
-    while generated_count < n_samples:
-        # Respect rate limit by acquiring up to batch_size tokens
-        need = min(batch_size, n_samples - generated_count)
+    while generated < n_samples:
+        need = min(batch_size, n_samples - generated)
         acquired = 0
         for _ in range(need):
             if tokens.acquire(timeout=5.0):
                 acquired += 1
         if acquired == 0:
-            time.sleep(0.1)
+            time.sleep(0.05)
             continue
-
         bs = acquired
-        # Generate batch
         batch_outputs: List[str] = []
         if hasattr(gen, "generate"):
-            try:
-                outs = gen.generate(bs)
-                if isinstance(outs, list):
-                    batch_outputs = [str(x) for x in outs]
-                else:
-                    # If generator returns iterator
-                    batch_outputs = [str(x) for x in list(outs)]
-            except Exception as e:
-                raise RuntimeError(f"Generator error: {e}")
+            outs = gen.generate(bs)
+            if isinstance(outs, list):
+                batch_outputs = [str(x) for x in outs]
+            else:
+                batch_outputs = [str(x) for x in list(outs)]
         elif hasattr(gen, "generate_one"):
             for _ in range(bs):
-                try:
-                    batch_outputs.append(str(gen.generate_one()))
-                except Exception as e:
-                    raise RuntimeError(f"Generator error: {e}")
+                batch_outputs.append(str(gen.generate_one()))
         else:
-            raise RuntimeError("Plugin Generator must implement 'generate(n: int)->List[str]' or 'generate_one()'.")
-
+            raise RuntimeError("Plugin Generator must implement 'generate(n)->List[str]' or 'generate_one()'.")
         for text in batch_outputs:
             out_f.write(json.dumps({"text": text}, ensure_ascii=False) + "\n")
-        generated_count += len(batch_outputs)
-
+        generated += len(batch_outputs)
     out_f.close()
-
-    # Membership inference in worker if possible
     if hasattr(gen, "membership_inference_reference") and hasattr(gen, "predict_proba"):
         try:
             refs = gen.membership_inference_reference()
@@ -428,8 +305,7 @@ def _worker_run(plugin_path: str,
                 out_ref = refs.get("out", [])
             else:
                 in_ref, out_ref = refs  # type: ignore
-            in_scores = []
-            out_scores = []
+            in_scores, out_scores = [], []
             if in_ref:
                 preds_in = gen.predict_proba(in_ref)  # type: ignore
                 for p in preds_in:
@@ -439,40 +315,20 @@ def _worker_run(plugin_path: str,
                 for p in preds_out:
                     out_scores.append(max(list(p)))
             risk, thr = compute_membership_risk(in_scores, out_scores)
-            meta["membership_inference"] = {
-                "in_scores": summary_stats(in_scores),
-                "out_scores": summary_stats(out_scores),
-                "risk_score": risk,
-                "best_threshold": thr,
-            }
+            meta["membership_inference"] = {"in_scores": summary_stats(in_scores), "out_scores": summary_stats(out_scores), "risk_score": risk, "best_threshold": thr}
         except Exception as e:
             meta["membership_inference"] = {"error": str(e)}
-
     return meta
 
-
-def run_in_sandbox(plugin_path: str,
-                   dataset_path: str,
-                   outputs_path: str,
-                   n_samples: int,
-                   batch_size: int,
-                   qps: int,
-                   egress_allowlist: Tuple[str, ...],
-                   cpu_limit: int,
-                   mem_mb: int,
-                   timeout: int = 3600) -> Dict[str, Any]:
-    q: "multiprocessing.Queue[Dict[str, Any]]"
+def run_in_sandbox(plugin_path: str, dataset_path: str, outputs_path: str, n_samples: int, batch_size: int, qps: int, egress_allowlist: Tuple[str, ...], cpu_limit: int, mem_mb: int, timeout: int = 3600) -> Dict[str, Any]:
     import multiprocessing
-    mgr = multiprocessing.Manager()
-    ret_q = mgr.Queue()  # type: ignore
-
+    ret_q: "multiprocessing.Queue[Dict[str, Any]]" = multiprocessing.Queue()  # type: ignore
     def target():
         try:
             meta = _worker_run(plugin_path, dataset_path, outputs_path, n_samples, batch_size, qps, egress_allowlist, cpu_limit, mem_mb)
             ret_q.put({"ok": True, "meta": meta})
         except Exception as e:
             ret_q.put({"ok": False, "error": str(e)})
-
     p = multiprocessing.Process(target=target, daemon=True)
     p.start()
     p.join(timeout=timeout)
@@ -487,12 +343,10 @@ def run_in_sandbox(plugin_path: str,
         raise RuntimeError(f"Sandboxed worker failed: {result.get('error')}")
     return result["meta"]
 
-
-# -------------------- Risk Computations -------------------- #
+# ---------- Risk Computations ----------
 
 def compute_canary_leak_confidence(outputs: Path, canaries: List[str], sample_limit: Optional[int] = None) -> Tuple[bool, float, Dict[str, Any]]:
-    found = []
-    total = 0
+    found, total = [], 0
     with outputs.open("r", encoding="utf-8") as f:
         for i, line in enumerate(f):
             if sample_limit and i >= sample_limit:
@@ -507,20 +361,15 @@ def compute_canary_leak_confidence(outputs: Path, canaries: List[str], sample_li
                 if c in text:
                     found.append({"index": i, "canary": c, "snippet": text[:200]})
                     break
-    confidence = 0.0
     leaked = len(found)
-    if leaked > 0:
-        # Assign high confidence for explicit canary leak
-        confidence = min(0.99, 1.0 - (0.5 ** leaked))
+    confidence = 0.99 if leaked > 0 else 0.0
     evidence = {"leaked": leaked, "total_examined": total, "instances": found[:50]}
     return leaked > 0, confidence, evidence
-
 
 def compute_dp_leak_rate(outputs: Path, dataset: Path, sample_limit: Optional[int] = None) -> Tuple[float, Dict[str, Any]]:
     ds = load_jsonl(dataset)
     ds_set = set(normalize_text(r.get("text", "")) for r in ds if "text" in r)
-    leaked = 0
-    total = 0
+    leaked, total = 0, 0
     examples = []
     with outputs.open("r", encoding="utf-8") as f:
         for i, line in enumerate(f):
@@ -532,18 +381,15 @@ def compute_dp_leak_rate(outputs: Path, dataset: Path, sample_limit: Optional[in
                 text = str(row.get("text", ""))
             except Exception:
                 text = line.strip()
-            norm = normalize_text(text)
-            if norm in ds_set:
+            if normalize_text(text) in ds_set:
                 leaked += 1
                 if len(examples) < 50:
                     examples.append({"index": i, "text": text[:200]})
     rate = (leaked / total) if total else 0.0
     return rate, {"examples": examples, "leaked": leaked, "total": total}
 
-
 def compute_pii_rate(outputs: Path, sample_limit: Optional[int] = None) -> Tuple[float, Dict[str, Any]]:
-    total = 0
-    hits = 0
+    total, hits = 0, 0
     samples = []
     with outputs.open("r", encoding="utf-8") as f:
         for i, line in enumerate(f):
@@ -563,41 +409,27 @@ def compute_pii_rate(outputs: Path, sample_limit: Optional[int] = None) -> Tuple
     rate = (hits / total) if total else 0.0
     return rate, {"samples": samples, "hits": hits, "total": total}
 
-
 def compute_membership_risk(in_scores: List[float], out_scores: List[float]) -> Tuple[float, float]:
-    # Simple threshold attack on max-probability scores
     if not in_scores or not out_scores:
         return 0.0, 0.5
     scores = sorted(set(in_scores + out_scores))
-    best_adv = 0.0
-    best_thr = 0.5
+    best_adv, best_thr = 0.0, 0.5
     for thr in scores:
         tpr = sum(1 for s in in_scores if s >= thr) / len(in_scores)
         fpr = sum(1 for s in out_scores if s >= thr) / len(out_scores)
         adv = max(0.0, tpr - fpr)
         if adv > best_adv:
-            best_adv = adv
-            best_thr = thr
-    # Normalize to [0,1] risk score; advantage is a reasonable proxy
+            best_adv, best_thr = adv, thr
     return float(best_adv), float(best_thr)
-
 
 def summary_stats(arr: List[float]) -> Dict[str, Any]:
     if not arr:
         return {"count": 0}
     s = sorted(arr)
     n = len(arr)
-    return {
-        "count": n,
-        "min": float(s[0]),
-        "max": float(s[-1]),
-        "mean": float(sum(arr) / n),
-        "p50": float(s[n // 2]),
-        "p90": float(s[int(n * 0.9) if int(n * 0.9) < n else n - 1]),
-    }
+    return {"count": n, "min": float(s[0]), "max": float(s[-1]), "mean": float(sum(arr) / n), "p50": float(s[n // 2]), "p90": float(s[int(min(n - 1, n * 0.9))])}
 
-
-# -------------------- Audit Orchestration -------------------- #
+# ---------- Audit Orchestration ----------
 
 @dataclasses.dataclass
 class AuditResult:
@@ -608,7 +440,6 @@ class AuditResult:
     outputs_path: Path
     incident_bundle: Optional[Path] = None
 
-
 class SynthGuard:
     def __init__(self, policy: Optional[Policy] = None):
         self.policy = policy or Policy()
@@ -618,32 +449,16 @@ class SynthGuard:
         if not self.policy.require_provenance:
             return {"verified": True, "skipped": True}
         if artifact is None:
-            return {"verified": False, "error": f"Missing artifact for {name}"}
+            raise PermissionError(f"Provenance required but missing artifact for {name}")
         ok, evidence = self.attestor.verify_blob(artifact, signature, attestation)
         if not ok:
             raise PermissionError(f"Provenance verification failed for {name}. Evidence: {json.dumps(evidence)[:5000]}")
         return evidence
 
-    def audit(self,
-              dataset_path: Path,
-              plugin_path: str,
-              out_dir: Path,
-              n_samples: int = 1000,
-              canary_count: int = 100,
-              dataset_sig: Optional[Path] = None,
-              dataset_attest: Optional[Path] = None,
-              model_artifact: Optional[Path] = None,
-              model_sig: Optional[Path] = None,
-              model_attest: Optional[Path] = None,
-              plugin_artifact: Optional[Path] = None,
-              plugin_sig: Optional[Path] = None,
-              plugin_attest: Optional[Path] = None) -> AuditResult:
+    def audit(self, dataset_path: Path, plugin_path: str, out_dir: Path, n_samples: int = 1000, canary_count: int = 100, dataset_sig: Optional[Path] = None, dataset_attest: Optional[Path] = None, model_artifact: Optional[Path] = None, model_sig: Optional[Path] = None, model_attest: Optional[Path] = None, plugin_artifact: Optional[Path] = None, plugin_sig: Optional[Path] = None, plugin_attest: Optional[Path] = None) -> AuditResult:
         out_dir.mkdir(parents=True, exist_ok=True)
         log(ETHICAL_WARNING)
-
         verif_evidence: Dict[str, Any] = {}
-
-        # Verify provenance for dataset/model/plugin
         if self.policy.require_provenance:
             log("Verifying dataset provenance...")
             verif_evidence["dataset"] = self.verify_provenance_or_block("dataset", dataset_path, dataset_sig, dataset_attest)
@@ -653,50 +468,22 @@ class SynthGuard:
             if plugin_artifact:
                 log("Verifying plugin provenance...")
                 verif_evidence["plugin"] = self.verify_provenance_or_block("plugin", plugin_artifact, plugin_sig, plugin_attest)
-
-        # Seed canaries
         canary_dataset = out_dir / "dataset_with_canaries.jsonl"
         log(f"Seeding {canary_count} canaries into dataset...")
         canaries = seed_canaries(dataset_path, canary_dataset, k=canary_count)
-
-        # Run generation inside sandbox
         outputs_path = out_dir / "generated_outputs.jsonl"
         log("Launching sandboxed generator worker...")
-        worker_meta = run_in_sandbox(
-            plugin_path=plugin_path,
-            dataset_path=str(canary_dataset),
-            outputs_path=str(outputs_path),
-            n_samples=n_samples,
-            batch_size=self.policy.batch_size,
-            qps=self.policy.rate_limit_qps,
-            egress_allowlist=self.policy.egress_allowlist,
-            cpu_limit=self.policy.cpu_limit_seconds,
-            mem_mb=self.policy.mem_limit_mb,
-            timeout=max(600, int(n_samples / max(1, self.policy.rate_limit_qps)) + 300),
-        )
-
-        # Canary leakage detection
+        worker_meta = run_in_sandbox(plugin_path=plugin_path, dataset_path=str(canary_dataset), outputs_path=str(outputs_path), n_samples=n_samples, batch_size=self.policy.batch_size, qps=self.policy.rate_limit_qps, egress_allowlist=self.policy.egress_allowlist, cpu_limit=self.policy.cpu_limit_seconds, mem_mb=self.policy.mem_limit_mb, timeout=max(600, int(n_samples / max(1, self.policy.rate_limit_qps)) + 300))
         log("Analyzing outputs for canary leakage...")
         leaked, confidence, canary_evidence = compute_canary_leak_confidence(outputs_path, canaries)
-
-        # PII/PHI scanning
         log("Scanning outputs for PII/PHI...")
         pii_rate, pii_evidence = compute_pii_rate(outputs_path)
-
-        # DP leakage estimation
         log("Estimating differential privacy leakage (near duplicates)...")
         dp_rate, dp_evidence = compute_dp_leak_rate(outputs_path, canary_dataset)
-
-        # Membership inference
         mi_result = worker_meta.get("membership_inference")
-        mi_risk = 0.0
-        if isinstance(mi_result, dict) and "risk_score" in mi_result:
-            mi_risk = float(mi_result["risk_score"])
-
-        # Decide policy actions
+        mi_risk = float(mi_result.get("risk_score")) if isinstance(mi_result, dict) and "risk_score" in mi_result else 0.0
         reasons: List[str] = []
         blocked = False
-
         if leaked and confidence >= self.policy.min_canary_confidence:
             blocked = True
             reasons.append(f"Canary leakage detected with confidence {confidence:.3f} (threshold {self.policy.min_canary_confidence}).")
@@ -709,62 +496,40 @@ class SynthGuard:
         if mi_risk > self.policy.membership_inference_threshold:
             blocked = True
             reasons.append(f"Membership inference risk {mi_risk:.3f} exceeds threshold {self.policy.membership_inference_threshold}.")
-
         report = {
             "timestamp": time.time(),
             "policy": dataclasses.asdict(self.policy),
-            "inputs": {
-                "dataset": str(dataset_path),
-                "plugin": plugin_path,
-                "n_samples": n_samples,
-                "canary_count": canary_count,
-            },
+            "inputs": {"dataset": str(dataset_path), "plugin": plugin_path, "n_samples": n_samples, "canary_count": canary_count},
             "provenance": verif_evidence,
             "worker_meta": worker_meta,
-            "results": {
-                "canary": {"leaked": leaked, "confidence": confidence, "evidence": canary_evidence},
-                "pii": {"rate": pii_rate, "evidence": pii_evidence},
-                "dp_leakage": {"rate": dp_rate, "evidence": dp_evidence},
-                "membership_inference": mi_result,
-            },
-            "decision": {
-                "blocked": blocked,
-                "reasons": reasons,
-            },
+            "results": {"canary": {"leaked": leaked, "confidence": confidence, "evidence": canary_evidence}, "pii": {"rate": pii_rate, "evidence": pii_evidence}, "dp_leakage": {"rate": dp_rate, "evidence": dp_evidence}, "membership_inference": mi_result},
+            "decision": {"blocked": blocked, "reasons": reasons},
             "ethics": ETHICAL_WARNING,
         }
-
         report_path = out_dir / "audit_report.json"
         with report_path.open("w", encoding="utf-8") as f:
             json.dump(report, f, indent=2, ensure_ascii=False)
-
-        # Sign report
         sig_path = out_dir / "audit_report.sig"
         sign_evidence = self.attestor.sign_file(report_path, sig_path)
         report["signing"] = sign_evidence
         with report_path.open("w", encoding="utf-8") as f:
             json.dump(report, f, indent=2, ensure_ascii=False)
-
         incident_bundle = None
         if blocked:
             log("Policy violation detected. Quarantining generator and producing incident bundle.")
             incident_bundle = self._emit_incident_bundle(out_dir, report_path, outputs_path, verif_evidence)
             self._quarantine(out_dir, reasons)
-
         ok = not blocked
         return AuditResult(ok=ok, blocked=blocked, reasons=reasons, report_path=report_path, outputs_path=outputs_path, incident_bundle=incident_bundle)
 
     def _emit_incident_bundle(self, out_dir: Path, report_path: Path, outputs_path: Path, verif_evidence: Dict[str, Any]) -> Path:
         bundle_dir = out_dir / f"incident_{uuid.uuid4().hex}"
         bundle_dir.mkdir(parents=True, exist_ok=False)
-        # Copy report
         shutil.copy2(report_path, bundle_dir / "report.json")
-        # Copy a sample of outputs and evidence
         sample_path = bundle_dir / "outputs_sample.jsonl"
         self._sample_file(outputs_path, sample_path, max_lines=200)
         with (bundle_dir / "verification_evidence.json").open("w", encoding="utf-8") as f:
             json.dump(verif_evidence, f, indent=2, ensure_ascii=False)
-        # Sign bundle manifest
         manifest = {"report": "report.json", "outputs_sample": "outputs_sample.jsonl", "verification_evidence": "verification_evidence.json"}
         (bundle_dir / "manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
         self.attestor.sign_file(bundle_dir / "manifest.json", bundle_dir / "manifest.sig")
@@ -779,21 +544,17 @@ class SynthGuard:
 
     def _quarantine(self, out_dir: Path, reasons: List[str]) -> None:
         quarantine_file = out_dir / "quarantine.json"
-        data = {"timestamp": time.time(), "reasons": reasons}
-        quarantine_file.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        quarantine_file.write_text(json.dumps({"timestamp": time.time(), "reasons": reasons}, indent=2), encoding="utf-8")
 
-
-# -------------------- CLI -------------------- #
+# ---------- CLI ----------
 
 def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     p = argparse.ArgumentParser(description="SynthGuard: Synthetic Data Leakage & Integrity Auditor")
     sub = p.add_subparsers(dest="cmd", required=True)
-
     v = sub.add_parser("verify", help="Verify attestation/signature for an artifact.")
     v.add_argument("--artifact", required=True, help="Path to artifact (file).")
     v.add_argument("--signature", help="Path to signature file (cosign/HMAC).")
-    v.add_argument("--attestation", help="Path to in-toto layout/attestation.")
-
+    v.add_argument("--attestation", help="Path to attestation (unused placeholder).")
     a = sub.add_parser("audit", help="Run full audit on a synthetic generator plugin.")
     a.add_argument("--dataset", required=True, help="Path to JSONL dataset with 'text' field.")
     a.add_argument("--plugin", required=True, help="Path to generator plugin module or file.")
@@ -801,7 +562,7 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     a.add_argument("--samples", type=int, default=1000, help="Number of samples to generate.")
     a.add_argument("--canaries", type=int, default=100, help="Number of canary records to seed.")
     a.add_argument("--dataset-sig", help="Dataset signature file (cosign/HMAC).")
-    a.add_argument("--dataset-attest", help="Dataset attestation (in-toto layout).")
+    a.add_argument("--dataset-attest", help="Dataset attestation (placeholder).")
     a.add_argument("--model", help="Model artifact path (optional).")
     a.add_argument("--model-sig", help="Model signature file.")
     a.add_argument("--model-attest", help="Model attestation file.")
@@ -816,9 +577,7 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     a.add_argument("--pii-threshold", type=float, help="PII/PHI emission rate threshold.")
     a.add_argument("--mi-threshold", type=float, help="Membership inference risk threshold.")
     a.add_argument("--require-rekor", action="store_true", help="Require Rekor verification for signatures.")
-
     return p.parse_args(argv)
-
 
 def main(argv: Optional[List[str]] = None) -> int:
     args = parse_args(argv)
@@ -829,18 +588,17 @@ def main(argv: Optional[List[str]] = None) -> int:
         ok, evidence = att.verify_blob(Path(args.artifact), Path(args.signature) if args.signature else None, Path(args.attestation) if args.attestation else None)
         print(json.dumps(evidence, indent=2))
         return 0 if ok else 2
-
     elif args.cmd == "audit":
         log(ETHICAL_WARNING)
         policy = Policy()
         if args.egress:
             policy.egress_allowlist = tuple([h.strip() for h in args.egress.split(",") if h.strip()])
         if args.cpu_limit:
-            policy.cpu_limit_seconds = args.cpu_limit
+            policy.cpu_limit_seconds = int(args.cpu_limit)
         if args.mem_mb:
-            policy.mem_limit_mb = args.mem_mb
+            policy.mem_limit_mb = int(args.mem_mb)
         if args.qps:
-            policy.rate_limit_qps = args.qps
+            policy.rate_limit_qps = int(args.qps)
         if args.dp_threshold is not None:
             policy.dp_leak_rate_threshold = float(args.dp_threshold)
         if args.pii_threshold is not None:
@@ -849,39 +607,15 @@ def main(argv: Optional[List[str]] = None) -> int:
             policy.membership_inference_threshold = float(args.mi_threshold)
         if args.require_rekor:
             policy.require_rekor = True
-
         sg = SynthGuard(policy)
         out_dir = Path(args.out)
         dataset = Path(args.dataset)
-
         try:
-            result = sg.audit(
-                dataset_path=dataset,
-                plugin_path=args.plugin,
-                out_dir=out_dir,
-                n_samples=int(args.samples),
-                canary_count=int(args.canaries),
-                dataset_sig=Path(args.dataset_sig) if args.dataset_sig else None,
-                dataset_attest=Path(args.dataset_attest) if args.dataset_attest else None,
-                model_artifact=Path(args.model) if args.model else None,
-                model_sig=Path(args.model_sig) if args.model_sig else None,
-                model_attest=Path(args.model_attest) if args.model_attest else None,
-                plugin_artifact=Path(args.plugin_artifact) if args.plugin_artifact else None,
-                plugin_sig=Path(args.plugin_sig) if args.plugin_sig else None,
-                plugin_attest=Path(args.plugin_attest) if args.plugin_attest else None,
-            )
-            print(json.dumps({
-                "ok": result.ok,
-                "blocked": result.blocked,
-                "reasons": result.reasons,
-                "report": str(result.report_path),
-                "outputs": str(result.outputs_path),
-                "incident_bundle": str(result.incident_bundle) if result.incident_bundle else None
-            }, indent=2))
+            result = sg.audit(dataset_path=dataset, plugin_path=args.plugin, out_dir=out_dir, n_samples=int(args.samples), canary_count=int(args.canaries), dataset_sig=Path(args.dataset_sig) if args.dataset_sig else None, dataset_attest=Path(args.dataset_attest) if args.dataset_attest else None, model_artifact=Path(args.model) if args.model else None, model_sig=Path(args.model_sig) if args.model_sig else None, model_attest=Path(args.model_attest) if args.model_attest else None, plugin_artifact=Path(args.plugin_artifact) if args.plugin_artifact else None, plugin_sig=Path(args.plugin_sig) if args.plugin_sig else None, plugin_attest=Path(args.plugin_attest) if args.plugin_attest else None)
+            print(json.dumps({"ok": result.ok, "blocked": result.blocked, "reasons": result.reasons, "report": str(result.report_path), "outputs": str(result.outputs_path), "incident_bundle": str(result.incident_bundle) if result.incident_bundle else None}, indent=2))
             return 1 if result.blocked else 0
         except PermissionError as e:
             log(f"Blocked by policy: {e}")
-            # Emit minimal incident bundle if provenance failed
             od = Path(args.out)
             od.mkdir(parents=True, exist_ok=True)
             (od / "policy_violation.json").write_text(json.dumps({"error": str(e)}), encoding="utf-8")
@@ -890,7 +624,6 @@ def main(argv: Optional[List[str]] = None) -> int:
             log(f"Audit failed: {e}")
             return 4
     return 0
-
 
 if __name__ == "__main__":
     sys.exit(main())
