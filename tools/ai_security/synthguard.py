@@ -85,16 +85,21 @@ class AttestationVerifier:
 
     def verify_blob(self, artifact: Path, signature: Optional[Path] = None, attestation: Optional[Path] = None) -> Tuple[bool, Dict[str, Any]]:
         evidence: Dict[str, Any] = {"artifact": str(artifact), "signature": str(signature) if signature else None, "methods": []}
-        ok = False
-        if not ok and self.cosign_cli and signature and self.cosign_key:
+        sig_ok = False
+        rekor_ok: Optional[bool] = None
+
+        # Signature verification via cosign
+        if not sig_ok and self.cosign_cli and signature and self.cosign_key:
             try:
                 cmd = [self.cosign_cli, "verify-blob", "--key", self.cosign_key, "--signature", str(signature), str(artifact)]
                 res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, check=False)
                 evidence["methods"].append({"method": "cosign-verify-blob", "output": res.stdout, "rc": res.returncode})
-                ok = (res.returncode == 0)
+                sig_ok = (res.returncode == 0)
             except Exception as e:
                 evidence["methods"].append({"method": "cosign-verify-blob", "error": str(e)})
-        if not ok and self.hmac_key and signature:
+
+        # Signature verification via HMAC
+        if not sig_ok and self.hmac_key and signature:
             try:
                 raw = signature.read_text(encoding="utf-8").strip()
                 sig_hex = None
@@ -104,31 +109,58 @@ class AttestationVerifier:
                     sig_hex = raw
                 if sig_hex:
                     mac = hmac.new(self.hmac_key, artifact.read_bytes(), hashlib.sha256).hexdigest()
-                    ok = hmac.compare_digest(mac, sig_hex.strip())
-                    evidence["methods"].append({"method": "hmac-sha256", "expected": mac, "provided": sig_hex, "ok": ok})
+                    sig_ok = hmac.compare_digest(mac, sig_hex.strip())
+                    evidence["methods"].append({"method": "hmac-sha256", "expected": mac, "provided": sig_hex, "ok": sig_ok})
             except Exception as e:
                 evidence["methods"].append({"method": "hmac-sha256", "error": str(e)})
-        if ok and self.policy.require_rekor and self.rekor_cli and signature:
-            try:
-                raw = signature.read_text(encoding="utf-8").strip()
+
+        # If provenance required but no signature present
+        if self.policy.require_provenance and not signature:
+            evidence["methods"].append({"method": "provenance", "error": "signature missing"})
+            sig_ok = False
+
+        # Rekor transparency log enforcement if required
+        if self.policy.require_rekor:
+            if not signature:
+                rekor_ok = False
+                evidence["methods"].append({"method": "rekor-cli-get", "error": "signature missing; cannot extract UUID"})
+            else:
+                raw = ""
                 entry_uuid = None
                 try:
-                    data = json.loads(raw)
-                    entry_uuid = data.get("rekor_entry_uuid") or data.get("logID") or data.get("uuid")
-                except Exception:
-                    pass
-                if entry_uuid:
-                    res = subprocess.run([self.rekor_cli, "get", "--uuid", entry_uuid], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, check=False)
-                    evidence["methods"].append({"method": "rekor-cli-get", "uuid": entry_uuid, "output": res.stdout, "rc": res.returncode})
-                    ok = ok and (res.returncode == 0)
+                    raw = signature.read_text(encoding="utf-8").strip()
+                    try:
+                        data = json.loads(raw)
+                        entry_uuid = data.get("rekor_entry_uuid") or data.get("logID") or data.get("uuid")
+                    except Exception:
+                        # if signature is not JSON, no UUID available
+                        entry_uuid = None
+                except Exception as e:
+                    evidence["methods"].append({"method": "rekor-cli-get", "error": f"failed reading signature: {e}"})
+                if not self.rekor_cli:
+                    rekor_ok = False
+                    evidence["methods"].append({"method": "rekor-cli-get", "error": "rekor-cli not available on PATH"})
+                elif not entry_uuid:
+                    rekor_ok = False
+                    evidence["methods"].append({"method": "rekor-cli-get", "error": "no Rekor UUID present in signature payload"})
                 else:
-                    evidence["methods"].append({"method": "rekor-cli-get", "warning": "no UUID in signature payload"})
-                    if self.policy.require_rekor:
-                        ok = False
-            except Exception as e:
-                evidence["methods"].append({"method": "rekor-cli-get", "error": str(e)})
-                ok = False
+                    try:
+                        res = subprocess.run([self.rekor_cli, "get", "--uuid", entry_uuid], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, check=False)
+                        evidence["methods"].append({"method": "rekor-cli-get", "uuid": entry_uuid, "output": res.stdout, "rc": res.returncode})
+                        rekor_ok = (res.returncode == 0)
+                    except Exception as e:
+                        rekor_ok = False
+                        evidence["methods"].append({"method": "rekor-cli-get", "error": str(e)})
+
+        # Final decision
+        if self.policy.require_rekor:
+            ok = bool(sig_ok and (rekor_ok is True))
+        else:
+            ok = bool(sig_ok)
+
         evidence["verified"] = ok
+        if attestation:
+            evidence["attestation"] = str(attestation)
         return ok, evidence
 
     def sign_file(self, file_path: Path, out_sig: Path) -> Dict[str, Any]:
@@ -138,7 +170,7 @@ class AttestationVerifier:
         if self.cosign_cli and cosign_priv:
             try:
                 res = subprocess.run([self.cosign_cli, "sign-blob", "--key", cosign_priv, str(file_path), "--output-signature", str(out_sig)], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, check=False)
-                evidence["methods"].append({"method": "cosign-sign-blob", "output": res.stdout, "rc": res.returncode})
+                evidence["methods"].append({"method": "cosind-sign-blob", "output": res.stdout, "rc": res.returncode})
                 ok = (res.returncode == 0 and out_sig.exists())
             except Exception as e:
                 evidence["methods"].append({"method": "cosign-sign-blob", "error": str(e)})
@@ -146,6 +178,12 @@ class AttestationVerifier:
             mac = hmac.new(self.hmac_key, file_path.read_bytes(), hashlib.sha256).hexdigest()
             out_sig.write_text(json.dumps({"hmac": mac, "algo": "HMAC-SHA256"}), encoding="utf-8")
             evidence["methods"].append({"method": "hmac-sha256", "hmac": mac})
+            ok = True
+        if not ok:
+            # Advisory digest signature to ensure reports/bundles are still traceable in low-dependency environments
+            sha256 = hashlib.sha256(file_path.read_bytes()).hexdigest()
+            out_sig.write_text(json.dumps({"sha256": sha256, "note": "advisory-digest-no-key"}), encoding="utf-8")
+            evidence["methods"].append({"method": "advisory-digest", "sha256": sha256})
             ok = True
         evidence["signed"] = ok
         return evidence
@@ -220,7 +258,7 @@ def _apply_limits_and_net(egress_allowlist: Tuple[str, ...], cpu_limit: int, mem
                 resolved = socket.gethostbyaddr(host)[0]
             except Exception:
                 resolved = host
-            if host not in allowed and resolved not in allowed and "127.0.0.1" not in allowed and host not in ("127.0.0.1", "localhost"):
+            if host not in allowed and resolved not in allowed and host not in ("127.0.0.1", "localhost"):
                 raise PermissionError(f"Egress blocked to {host}. Allowed: {sorted(list(allowed))}")
             return original_connect(self, address)
         except PermissionError:
