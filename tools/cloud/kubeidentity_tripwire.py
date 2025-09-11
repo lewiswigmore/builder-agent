@@ -3,19 +3,17 @@ import argparse
 import base64
 import datetime as dt
 import errno
-import glob
 import hmac
 import hashlib
 import ipaddress
 import json
 import os
 import secrets
-import stat
 import sys
 import threading
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 from urllib.parse import urlparse
 
 # Optional crypto for encryption-at-rest
@@ -216,7 +214,7 @@ class KubeClient:
         try:
             self.core.delete_namespaced_service_account(name, namespace)
         except ApiException as e:
-            if e.status != 404:
+            if getattr(e, "status", None) != 404:
                 raise
 
     def create_role_and_binding(self, namespace: str, role_name: str, sa_name: str):
@@ -228,7 +226,7 @@ class KubeClient:
         try:
             self.rbac.create_namespaced_role(namespace, role)
         except ApiException as e:
-            if e.status != 409:
+            if getattr(e, "status", None) != 409:
                 raise
         rb = client.V1RoleBinding(
             metadata=client.V1ObjectMeta(name=f"{role_name}-bind", namespace=namespace),
@@ -238,21 +236,21 @@ class KubeClient:
         try:
             self.rbac.create_namespaced_role_binding(namespace, rb)
         except ApiException as e:
-            if e.status != 409:
+            if getattr(e, "status", None) != 409:
                 raise
 
     def delete_rolebinding(self, namespace: str, name: str):
         try:
             self.rbac.delete_namespaced_role_binding(name, namespace)
         except ApiException as e:
-            if e.status != 404:
+            if getattr(e, "status", None) != 404:
                 raise
 
     def delete_role(self, namespace: str, name: str):
         try:
             self.rbac.delete_namespaced_role(name, namespace)
         except ApiException as e:
-            if e.status != 404:
+            if getattr(e, "status", None) != 404:
                 raise
 
     def request_token(self, namespace: str, sa_name: str, audience: str, ttl_seconds: int) -> Dict[str, Any]:
@@ -472,7 +470,7 @@ class KubeIdentityTripwire:
                     path = self.signer.seal_to_file(f"honey-abuse-{hid}", env)
                     # Auto-revoke abused credentials
                     self.revoke_honey(hid, reason="abuse_detected")
-                    # Send minimal alert with no secrets
+                    # Send signed minimal alert with no secrets
                     alert_doc = {
                         "alert": "KubeIdentityTripwire::HoneySAAbuse",
                         "honey_id": hid,
@@ -481,7 +479,8 @@ class KubeIdentityTripwire:
                         "evidence": str(path),
                         "time": utc_now_iso(),
                     }
-                    self._send_webhook_if_allowed(alert_doc)
+                    alert_env = self.signer.sign(alert_doc)
+                    self._send_webhook_if_allowed(alert_env)
 
     def monitor_audit_file(self, audit_file: Path) -> AuditLogTailer:
         tailer = AuditLogTailer(audit_file, self.handle_audit_record, poll_interval=2.0)
