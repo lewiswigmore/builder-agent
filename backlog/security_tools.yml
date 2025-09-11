@@ -1235,7 +1235,7 @@ security_tools:
     risk score; if score > policy threshold, quarantine the model and require manual
     approval.
   ready: true
-  status: todo
+  status: needs_work
   area_allowlist:
   - tools/ai_security/synthguard.py
   - tests/test_ai_security_009.py
@@ -1892,4 +1892,87 @@ security_tools:
   area_allowlist:
   - tools/forensics/llmchain_forensic_recorder.py
   - tests/test_forensics_008.py
+  max_changed_lines: 500
+- id: IOT-007
+  title: 'MatterMesh Auditor: Thread/Matter/Zigbee Commissioning & Key Hygiene Tester'
+  category: iot
+  description: Passive-first auditing and safety-aware fuzzing of Matter/Thread/Zigbee
+    home/edge networks. Validates commissioning flows, key rotation, nonce/DevAddr
+    hygiene, and ACL posture using 802.15.4 captures and lab-safe probes. Extracts
+    SBOMs from firmware, correlates CVEs, and emits cryptographically sealed findings.
+  security_requirements:
+  - Default to passive analysis with SDR/pcap inputs; enable active tests only in
+    explicit lab mode with rate limits and device allowlists.
+  - Store keys/artifacts encrypted-at-rest; sign reports with timestamped attestations
+    and redact device identifiers.
+  - Implement protocol-aware safety guards that auto-fall-back to passive sniffing
+    on critical frames (e.g., Network Reset, Factory Reset) or high error counters.
+  acceptance_tests:
+  - Given an 802.15.4 PCAP containing a Matter commissioning using a default SPAKE2+
+    passcode, the tool flags weak passcode usage with evidence and remediation.
+  - When lab mode fuzzes a Thread device, the tool never exceeds configured frame-per-second
+    and stops on encountering specific error/status frames, logging a safety fallback
+    event.
+  - Upon firmware SBOM extraction from a Zigbee coordinator image, the tool identifies
+    hardcoded link keys and maps them to known CVEs with a sealed report.
+  ready: true
+  status: todo
+  area_allowlist:
+  - tools/iot/mattermesh_auditor.py
+  - tests/test_iot_007.py
+  max_changed_lines: 500
+- id: HUNT-004
+  title: 'BYOVD Hunter: Malicious Driver Abuse & Kernel Tamper Detector'
+  category: threat_hunting
+  description: "Detects Bring-Your-Own-Vulnerable-Driver (BYOVD) abuse and kernel\
+    \ tampering across Windows/Linux using ETW/eBPF telemetry, driver signature/blocklist\
+    \ checks, and kernel object integrity baselines. Correlates temporal chains (driver\
+    \ load \u2192 handle opens \u2192 protection tamper) and produces signed incident\
+    \ bundles."
+  security_requirements:
+  - Use least-privilege collectors with kernel-safe sampling budgets; fail-closed
+    if overhead exceeds configured thresholds.
+  - Continuously verify driver/collector integrity via code signing and secure boot
+    measurements; seal evidence with timestamps and transparency logs.
+  - Exclude sensitive process payloads; collect metadata/hash-level evidence only,
+    with role-based access controls on incident bundles.
+  acceptance_tests:
+  - Loading a known vulnerable driver hash triggers a high-severity alert referencing
+    the blocklist entry and kernel version impact, with a causal chain graph.
+  - An unsigned driver load attempt is blocked/flagged, and the tool records ETW/eBPF
+    events showing failed/signature-mismatch loading semantics.
+  - A simulated EDR self-protection bypass (handle to protected process) is detected
+    and correlated to prior driver load, generating a sealed incident bundle.
+  ready: true
+  status: todo
+  area_allowlist:
+  - tools/threat_hunting/byovd_hunter.py
+  - tests/test_hunt_004.py
+  max_changed_lines: 500
+- id: MOBILE-004
+  title: 'ModelGuard Mobile: On-Device ML Model Exfil & Theft Auditor'
+  category: mobile
+  description: 'Audits Android/iOS apps for on-device ML model risks: unsigned weight
+    loading, dynamic code/model injection, embedding/feature exfiltration, and prompt/label
+    leakage. Combines static SBOM/model inventory with emulator-based dynamic instrumentation
+    (Frida/LLDB) and canary embeddings to detect misuse.'
+  security_requirements:
+  - Perform on-device data minimization and redact PII; only hash model artifacts
+    and endpoints, never store raw user inputs.
+  - Sandbox dynamic instrumentation with egress allowlists; block or simulate network
+    calls in lab mode to prevent real data exfiltration.
+  - Sign and timestamp risk attestations; verify app/SDK signatures and produce reproducible
+    SBOMs (SPDX/CycloneDX).
+  acceptance_tests:
+  - Static analysis of an APK with bundled .pt/.tflite weights produces a model inventory,
+    flags missing signature/attestation, and generates an SBOM with hashes.
+  - Dynamic run seeds a signed canary embedding and detects an unauthorized egress
+    to an unlisted endpoint, raising a critical finding with request metadata.
+  - Membership inference risk evaluation on a sample model exceeds threshold and the
+    tool blocks release by emitting a signed, policy-gated risk attestation.
+  ready: true
+  status: todo
+  area_allowlist:
+  - tools/mobile/modelguard_mobile.py
+  - tests/test_mobile_004.py
   max_changed_lines: 500
