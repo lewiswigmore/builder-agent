@@ -208,7 +208,7 @@ class RAGStore:
                     "sha256": sha,
                 }
             )
-            raise PolicyViolation("RAG document must be signed") from VerificationError(json.dumps(att))
+            raise PolicyViolation(_canonical_json(att))
         # Verify signature (HMAC)
         expect_sig = self._make_signature(doc_id, content, sha)
         if not hmac.compare_digest(signature, expect_sig):
@@ -223,7 +223,7 @@ class RAGStore:
                     "sha256": sha,
                 }
             )
-            raise VerificationError(json.dumps(att))
+            raise VerificationError(_canonical_json(att))
         self._docs[doc_id] = {
             "sha256": sha,
             "signature": signature,
@@ -240,7 +240,7 @@ class RAGStore:
             att = self._attestor.sign_payload(
                 {"policy_violation": "RAG unknown document", "doc_id": doc_id}
             )
-            raise PolicyViolation(json.dumps(att))
+            raise PolicyViolation(_canonical_json(att))
         content = rec["content"]
         sha = _sha256_hex(content)
         if sha != rec["sha256"]:
@@ -256,7 +256,7 @@ class RAGStore:
                     "got": sha,
                 }
             )
-            raise VerificationError(json.dumps(att))
+            raise VerificationError(_canonical_json(att))
         # Re-verify signature
         expect_sig = self._make_signature(doc_id, content, sha)
         if not hmac.compare_digest(expect_sig, rec["signature"]):
@@ -267,7 +267,7 @@ class RAGStore:
             att = self._attestor.sign_payload(
                 {"policy_violation": "RAG signature mismatch on fetch", "doc_id": doc_id}
             )
-            raise VerificationError(json.dumps(att))
+            raise VerificationError(_canonical_json(att))
         self._transcript.append("rag_fetch_ok", {"doc_id": doc_id})
         return content
 
@@ -553,7 +553,31 @@ class PromptLeakTrap:
                     "ethical_warning": ethical_warning(),
                 }
                 self.transcript.append("plugin_call", {"plugin": plugin_name})
-                result = plugin_callable(exec_ctx, *args, **kwargs)
+                try:
+                    result = plugin_callable(exec_ctx, *args, **kwargs)
+                except EgressBlocked as eb:
+                    # Capture network guard alerts and return structured response with attested details
+                    self.transcript.append("plugin_error", {"plugin": plugin_name, "error": str(eb)})
+                    net_guard = ctx["network_guard"]
+                    if net_guard.alerts:
+                        for a in net_guard.alerts:
+                            alerts.append(
+                                self.canary.make_alert(
+                                    "EGRESS_BLOCKED",
+                                    self.transcript,
+                                    a["attestation"]["payload"]["details"],
+                                )
+                            )
+                    else:
+                        alerts.append(
+                            self.canary.make_alert(
+                                "EGRESS_BLOCKED",
+                                self.transcript,
+                                {"error": str(eb), "allowlist": self.allowlist},
+                            )
+                        )
+                    sealed = self.transcript.seal(self.attestor)
+                    return {"error": str(eb), "alerts": alerts, "transcript": sealed}
                 # Scan result for canary tokens
                 if isinstance(result, str):
                     scan_maybe(result)
@@ -600,7 +624,7 @@ class PromptLeakTrap:
                 sealed = self.transcript.seal(self.attestor)
                 return {"result": result, "alerts": alerts, "transcript": sealed}
         except EgressBlocked as eb:
-            # Egress blocked by policy; include existing alerts via network guard
+            # Egress blocked by policy outside of sandbox catch (fallback)
             self.transcript.append("plugin_error", {"plugin": plugin_name, "error": str(eb)})
             sealed = self.transcript.seal(self.attestor)
             # Create a policy alert if none present
