@@ -1264,7 +1264,7 @@ security_tools:
   - Identify projected token audiences that are overly broad or missing; recommend
     constrained audiences and validate fix through re-scan.
   ready: true
-  status: todo
+  status: in_progress
   area_allowlist:
   - tools/cloud/kubeidentity_tripwire.py
   - tests/test_cloud_008.py
