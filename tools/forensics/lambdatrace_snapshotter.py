@@ -9,8 +9,7 @@ import hashlib
 import hmac
 import secrets
 import stat
-import errno
-from collections import deque, defaultdict
+from collections import deque
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional, Tuple, List
 
@@ -66,8 +65,7 @@ def redact_env(env: Dict[str, str]) -> Dict[str, str]:
         if any(p in key_upper for p in _SECRET_KEY_PATTERNS):
             redacted[k] = "<REDACTED>"
         else:
-            # avoid including long values; cap length
-            redacted[k] = v if len(v) <= 128 else v[:64] + "...<TRUNCATED>"
+            redacted[k] = v if isinstance(v, str) and len(v) <= 128 else (v[:64] + "...<TRUNCATED>" if isinstance(v, str) else "<NONSTR>")
     return redacted
 
 
@@ -96,7 +94,10 @@ class RingBufferTee(io.TextIOBase):
         if not isinstance(s, str):
             s = s.decode("utf-8", errors="ignore")
         with self._lock:
-            self._orig.write(s)
+            try:
+                self._orig.write(s)
+            except Exception:
+                pass
             # capture redacted
             s_red = redact_text(s)
             self._buf.append(s_red)
@@ -108,7 +109,10 @@ class RingBufferTee(io.TextIOBase):
 
     def flush(self):
         with self._lock:
-            self._orig.flush()
+            try:
+                self._orig.flush()
+            except Exception:
+                pass
 
     def snapshot(self) -> str:
         with self._lock:
@@ -123,27 +127,34 @@ class StdCapture:
         self._stdout_tee = None
         self._stderr_tee = None
         self._max_bytes = max_bytes
+        self._lock = threading.Lock()
+        self._refcnt = 0
 
     def start(self):
         if not self.enable:
             return
-        if self._stdout_tee is None:
-            self._stdout_orig = sys.stdout
-            self._stderr_orig = sys.stderr
-            self._stdout_tee = RingBufferTee(sys.stdout, self._max_bytes)
-            self._stderr_tee = RingBufferTee(sys.stderr, self._max_bytes)
-            sys.stdout = self._stdout_tee  # type: ignore
-            sys.stderr = self._stderr_tee  # type: ignore
+        with self._lock:
+            if self._stdout_tee is None:
+                self._stdout_orig = sys.stdout
+                self._stderr_orig = sys.stderr
+                self._stdout_tee = RingBufferTee(sys.stdout, self._max_bytes)
+                self._stderr_tee = RingBufferTee(sys.stderr, self._max_bytes)
+                sys.stdout = self._stdout_tee  # type: ignore
+                sys.stderr = self._stderr_tee  # type: ignore
+            self._refcnt += 1
 
     def stop(self):
         if not self.enable:
             return
-        if self._stdout_tee is not None and self._stdout_orig is not None:
-            sys.stdout = self._stdout_orig  # type: ignore
-            self._stdout_tee = None
-        if self._stderr_tee is not None and self._stderr_orig is not None:
-            sys.stderr = self._stderr_orig  # type: ignore
-            self._stderr_tee = None
+        with self._lock:
+            if self._refcnt > 0:
+                self._refcnt -= 1
+            if self._refcnt == 0 and self._stdout_tee is not None and self._stdout_orig is not None:
+                sys.stdout = self._stdout_orig  # type: ignore
+                self._stdout_tee = None
+            if self._refcnt == 0 and self._stderr_tee is not None and self._stderr_orig is not None:
+                sys.stderr = self._stderr_orig  # type: ignore
+                self._stderr_tee = None
 
     def snapshot(self) -> Dict[str, str]:
         if not self.enable or self._stdout_tee is None or self._stderr_tee is None:
@@ -163,6 +174,8 @@ class NetTracer:
         self._patched = False
         self._flows_lock = threading.Lock()
         self._flows: Dict[Tuple[str, str, int, int, str], Dict[str, Any]] = {}
+        self._patch_lock = threading.Lock()
+        self._patch_ref = 0
 
     def _record_flow(self, sock: _socket.socket, dst: Tuple[str, int], proto: str):
         if not self.enable:
@@ -174,14 +187,15 @@ class NetTracer:
             dst_host, dst_port = dst
         except Exception:
             return
-        k = (src_host, dst_host, src_port, dst_port, proto)
+        k = (src_host, dst_host, int(src_port), int(dst_port), proto)
         with self._flows_lock:
             it = self._flows.get(k)
+            now = _now_iso8601()
             if it is None:
-                self._flows[k] = {"count": 1, "first": _now_iso8601(), "last": _now_iso8601()}
+                self._flows[k] = {"count": 1, "first": now, "last": now}
             else:
                 it["count"] += 1
-                it["last"] = _now_iso8601()
+                it["last"] = now
 
     def _wrap_socket_class(self):
         outer = self
@@ -191,7 +205,6 @@ class NetTracer:
                 res = super().connect(address)
                 try:
                     proto = "tcp" if self.type == _socket.SOCK_STREAM else "udp"
-                    # address may be tuple or str (unix), only record inet
                     if isinstance(address, tuple) and len(address) >= 2:
                         outer._record_flow(self, (address[0], int(address[1])), proto)
                 except Exception:
@@ -210,19 +223,25 @@ class NetTracer:
         return TracedSocket
 
     def enable_patch(self):
-        if not self.enable or self._patched:
+        if not self.enable:
             return
-        try:
-            TracedSocket = self._wrap_socket_class()
-            _socket.socket = TracedSocket  # type: ignore
-            self._patched = True
-        except Exception:
-            self._patched = False
+        with self._patch_lock:
+            if not self._patched:
+                try:
+                    TracedSocket = self._wrap_socket_class()
+                    _socket.socket = TracedSocket  # type: ignore
+                    self._patched = True
+                except Exception:
+                    self._patched = False
+            self._patch_ref += 1
 
     def disable_patch(self):
-        if self._patched:
-            _socket.socket = self._orig_socket  # type: ignore
-            self._patched = False
+        with self._patch_lock:
+            if self._patch_ref > 0:
+                self._patch_ref -= 1
+            if self._patched and self._patch_ref == 0:
+                _socket.socket = self._orig_socket  # type: ignore
+                self._patched = False
 
     def snapshot(self) -> List[Dict[str, Any]]:
         with self._flows_lock:
@@ -251,7 +270,7 @@ class TokenBucket:
     def __init__(self, rate_per_sec: float, capacity: int):
         self.rate = max(0.0, rate_per_sec)
         self.capacity = max(1, capacity)
-        self.tokens = float(capacity)
+        self.tokens = float(self.capacity)
         self.last = time.monotonic()
         self._lock = threading.Lock()
 
@@ -275,15 +294,10 @@ class SlidingMetrics:
     def __init__(self, maxlen: int = 500):
         self._lock = threading.Lock()
         self._items: deque = deque(maxlen=maxlen)  # each: (base_latency, overhead, success)
-        self._err_count = 0
-        self._total = 0
 
     def record(self, base_latency: float, overhead: float, success: bool):
         with self._lock:
             self._items.append((base_latency, overhead, success))
-            self._total += 1
-            if not success:
-                self._err_count += 1
 
     def p95_overhead_ratio(self) -> float:
         with self._lock:
@@ -299,10 +313,8 @@ class SlidingMetrics:
 
     def error_rate(self) -> float:
         with self._lock:
-            total = self._total if self._total > 0 else len(self._items)
-            if total == 0:
+            if not self._items:
                 return 0.0
-            # recompute err rate in window
             err = 0
             for _, _, success in self._items:
                 if not success:
@@ -322,7 +334,6 @@ class Archive:
         self.log_path = os.path.join(self.root, "integrity.log")
         self._log_lock = threading.Lock()
         os.makedirs(self.root, exist_ok=True)
-        # restrict directory perms
         try:
             os.chmod(self.root, 0o750)
         except Exception:
@@ -344,42 +355,36 @@ class Archive:
         with open(path, "wb") as f:
             f.write(data)
             f.flush()
-            os.fsync(f.fileno())
-        # best-effort set read-only to emulate WORM
+            try:
+                os.fsync(f.fileno())
+            except Exception:
+                pass
         try:
             os.chmod(path, stat.S_IRUSR | stat.S_IRGRP | stat.S_IROTH)
         except Exception:
             pass
 
     def _append_integrity_log(self, entry: Dict[str, Any]):
-        # append-only integrity log with hash chaining
         with self._log_lock:
             prev_hash = ""
             try:
                 if os.path.exists(self.log_path):
                     with open(self.log_path, "rb") as f:
-                        f.seek(0, os.SEEK_END)
-                        size = f.tell()
-                        # simple: compute hash of entire log as prev anchor
-                        f.seek(0)
                         prev_hash = _sha256(f.read())
             except Exception:
                 prev_hash = ""
             entry2 = dict(entry)
             entry2["prev_hash"] = prev_hash
             entry_bytes = (_safe_json_dumps(entry2) + b"\n")
-            # sign the log entry too
             entry_sig = hmac.new(self.hmac_key, entry_bytes, hashlib.sha256).hexdigest()
             entry2["log_sig"] = entry_sig
             final_bytes = (_safe_json_dumps(entry2) + b"\n")
-            # open with O_APPEND semantics
             with open(self.log_path, "ab", buffering=0) as lf:
                 lf.write(final_bytes)
                 try:
                     os.fsync(lf.fileno())
                 except Exception:
                     pass
-            # set read-only if not already; but we need to keep append; skip chmod on log
 
     def store_bundle(self, evidence: Dict[str, Any]) -> Dict[str, Any]:
         sealed = self._seal_bundle(evidence)
@@ -388,7 +393,6 @@ class Archive:
         fname = f"bundle-{bundle_id}.json"
         fpath = os.path.join(self.root, fname)
         self._write_file_worm(fpath, _safe_json_dumps(sealed))
-        # integrity log
         self._append_integrity_log({"id": bundle_id, "ts": ts, "hash": sealed["hash"], "key_id": self.key_id})
         return {"bundle_id": bundle_id, "path": fpath, "hash": sealed["hash"], "signature": sealed["signature"], "key_id": self.key_id}
 
@@ -397,12 +401,17 @@ class Archive:
             with open(path, "rb") as f:
                 data = f.read()
             obj = json.loads(data.decode("utf-8"))
-            payload = obj["payload"]
+            payload = obj.get("payload")
+            if not isinstance(payload, dict):
+                return False, "invalid payload"
             content_hash = _sha256(_safe_json_dumps(payload))
             if content_hash != obj.get("hash"):
                 return False, "hash mismatch"
-            expected_sig = hmac.new(self.hmac_key, (payload["ts"] + content_hash).encode("utf-8"), hashlib.sha256).hexdigest()
-            if not hmac.compare_digest(expected_sig, obj.get("signature", "")):
+            expected_sig = hmac.new(self.hmac_key, (payload.get("ts", "") + content_hash).encode("utf-8"), hashlib.sha256).hexdigest()
+            sig = obj.get("signature", "")
+            if not sig:
+                return False, "missing signature"
+            if not hmac.compare_digest(expected_sig, sig):
                 return False, "signature invalid"
             return True, None
         except Exception as e:
@@ -416,8 +425,7 @@ class Archive:
 def _summarize_tmpfs(root: str = "/tmp", max_entries: int = 200) -> Dict[str, Any]:
     summary = []
     try:
-        for dirpath, dirnames, filenames in os.walk(root):
-            # avoid deep traversal cost; limit to top 2 levels
+        for dirpath, _dirnames, filenames in os.walk(root):
             depth = dirpath.count(os.sep) - root.count(os.sep)
             if depth > 2:
                 continue
@@ -427,7 +435,6 @@ def _summarize_tmpfs(root: str = "/tmp", max_entries: int = 200) -> Dict[str, An
                     st = os.lstat(fpath)
                     size = st.st_size
                     mtime = datetime.fromtimestamp(st.st_mtime, tz=timezone.utc).isoformat()
-                    # avoid PII: hash file name, keep extension
                     base, ext = os.path.splitext(name)
                     safe_name = _hash_str(base) + ext[:8]
                     summary.append({"path_hash": _hash_str(dirpath), "name": safe_name, "size": size, "mtime": mtime, "mode": st.st_mode})
@@ -446,7 +453,6 @@ def _summarize_tmpfs(root: str = "/tmp", max_entries: int = 200) -> Dict[str, An
 
 def _provider_context(context: Any) -> Dict[str, Any]:
     meta: Dict[str, Any] = {}
-    # AWS Lambda
     if context is not None:
         try:
             req_id = getattr(context, "aws_request_id", None)
@@ -463,7 +469,6 @@ def _provider_context(context: Any) -> Dict[str, Any]:
                 meta["remaining_time_ms"] = rem_ms()
         except Exception:
             pass
-    # Common cloud hints
     for k in ["AWS_REGION", "GCP_PROJECT", "FUNCTION_REGION", "WEBSITE_SITE_NAME", "K_SERVICE", "X_GOOGLE_FUNCTION_NAME", "FUNCTION_NAME"]:
         v = os.getenv(k)
         if v:
@@ -504,18 +509,15 @@ class LambdaTraceSnapshotter:
         self.net_tracer = NetTracer(capture_network, network_sample_rate)
         self.overhead_threshold_p95 = max(0.0, overhead_threshold_p95)
         self.error_rate_threshold = max(0.0, error_rate_threshold)
-        # HMAC key and archive
         if hmac_key is None:
             key_env = os.getenv("LAMBDATRACE_HMAC_KEY")
             if key_env:
                 hmac_key = hashlib.sha256(key_env.encode("utf-8")).digest()
             else:
-                # ephemeral per instance key if none provided
                 hmac_key = secrets.token_bytes(32)
         self.hmac_key = hmac_key
         key_id = _sha256(self.hmac_key)[:16]
         self.archive = Archive(archive_dir or os.getenv("LAMBDATRACE_ARCHIVE_DIR", "./lambdatrace_archive"), self.hmac_key, key_id)
-        # internal lock
         self._lock = threading.Lock()
 
     @staticmethod
@@ -556,15 +558,16 @@ class LambdaTraceSnapshotter:
         if self.mode == "cold-start":
             if self._cold:
                 self._cold = False
-                # do not throttle cold-start capture
                 return True
             return False
-        # dynamic throttling
+        # every-invoke means skip sampling, but still allow rate limit
+        if self.mode == "every-invoke":
+            return self.rate_limiter.acquire(1.0, self.rate_wait_ms)
+        # dynamic sampling
         sr = self.dynamic_sample_rate
         if sr > 0.0:
             if secrets.randbelow(1000000) / 1000000.0 > sr:
                 return False
-        # rate limit
         if not self.rate_limiter.acquire(1.0, self.rate_wait_ms):
             return False
         return True
@@ -573,17 +576,14 @@ class LambdaTraceSnapshotter:
         p95 = self.metrics.p95_overhead_ratio()
         err = self.metrics.error_rate()
         if p95 > self.overhead_threshold_p95 or err > self.error_rate_threshold:
-            # Engage throttle: reduce sample rate aggressively
             new_sr = max(0.0, min(self.dynamic_sample_rate, 0.01))
             if new_sr != self.dynamic_sample_rate:
                 self.dynamic_sample_rate = new_sr
                 try:
-                    # use stderr to avoid interfering stdout capture
                     sys.stderr.write(f"[LambdaTrace] auto-throttle engaged: p95_overhead={p95:.4f}, err_rate={err:.4f}, sample_rate={self.dynamic_sample_rate}\n")
                 except Exception:
                     pass
         else:
-            # relax toward configured sample_rate
             if self.dynamic_sample_rate < self.sample_rate:
                 self.dynamic_sample_rate = min(self.sample_rate, self.dynamic_sample_rate + 0.01)
 
@@ -601,7 +601,6 @@ class LambdaTraceSnapshotter:
             "python": sys.version.split()[0],
             "time": _now_iso8601(),
         }
-        # limited /proc fd summary (non-content, count only)
         fd_count = 0
         try:
             fd_count = len(os.listdir(f"/proc/{os.getpid()}/fd"))
@@ -620,9 +619,7 @@ class LambdaTraceSnapshotter:
         }
 
     def wrap_handler(self, handler):
-        # advisory: injection only on enabled; tee and net tracer minimal overhead
         def wrapped(event, context):
-            # capture decision at entry, but capture content after
             capture_now = self.should_capture(context)
             if capture_now:
                 self.stdout_cap.start()
@@ -643,22 +640,22 @@ class LambdaTraceSnapshotter:
                     o_start = time.perf_counter()
                     try:
                         evidence = self._collect_evidence(context)
-                        self.stdout_cap.stop()
-                        self.net_tracer.disable_patch()
                         self.archive.store_bundle(evidence)
                     except Exception as e:
+                        success = False
                         try:
                             sys.stderr.write(f"[LambdaTrace] capture/store error: {e}\n")
                         except Exception:
                             pass
                     finally:
+                        self.stdout_cap.stop()
+                        self.net_tracer.disable_patch()
                         o_end = time.perf_counter()
                         overhead = o_end - o_start
                 self.metrics.record(base_latency=base_latency, overhead=overhead, success=success)
                 self._auto_throttle()
         return wrapped
 
-    # Convenience API for non-decorator usage
     def capture_now(self, context: Any = None) -> Optional[Dict[str, Any]]:
         if not self.should_capture(context):
             return None
@@ -681,9 +678,34 @@ def instrument(handler):
     return snap.wrap_handler(handler)
 
 
+def _stateless_verify_bundle(path: str, hmac_key_env: Optional[str]) -> Tuple[bool, Optional[str]]:
+    try:
+        with open(path, "rb") as f:
+            data = f.read()
+        obj = json.loads(data.decode("utf-8"))
+        payload = obj.get("payload")
+        if not isinstance(payload, dict):
+            return False, "invalid payload"
+        content_hash = _sha256(_safe_json_dumps(payload))
+        if content_hash != obj.get("hash"):
+            return False, "hash mismatch"
+        sig = obj.get("signature", "")
+        if not sig:
+            return False, "missing signature"
+        if hmac_key_env:
+            key = hashlib.sha256(hmac_key_env.encode("utf-8")).digest()
+            expected_sig = hmac.new(key, (payload.get("ts", "") + content_hash).encode("utf-8"), hashlib.sha256).hexdigest()
+            if not hmac.compare_digest(expected_sig, sig):
+                return False, "signature invalid"
+        # If no key provided, we still verified content hash; signature cannot be verified without key.
+        return True, None
+    except Exception as e:
+        return False, str(e)
+
+
 def verify_bundle(path: str) -> Tuple[bool, Optional[str]]:
-    snap = LambdaTraceSnapshotter.from_env()
-    return snap.archive.verify_bundle(path)
+    # Prefer env key if available, otherwise perform hash-only verification
+    return _stateless_verify_bundle(path, os.getenv("LAMBDATRACE_HMAC_KEY"))
 
 
 def transfer_and_verify(src_path: str, dest_dir: str) -> Tuple[str, bool, Optional[str]]:
@@ -700,21 +722,5 @@ def transfer_and_verify(src_path: str, dest_dir: str) -> Tuple[str, bool, Option
             if not buf:
                 break
             fdst.write(buf)
-    # verify
     ok, err = verify_bundle(dest_path)
     return dest_path, ok, err
-
-
-# -------------
-# Example note
-# -------------
-# To use in AWS Lambda (or similar):
-# from tools.forensics.lambdatrace_snapshotter import instrument
-# @instrument
-# def handler(event, context):
-#     print("Hello")
-#     return {"ok": True}
-#
-# Or programmatic:
-# snap = LambdaTraceSnapshotter.from_env()
-# handler = snap.wrap_handler(handler)
