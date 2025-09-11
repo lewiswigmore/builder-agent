@@ -1235,7 +1235,7 @@ security_tools:
     risk score; if score > policy threshold, quarantine the model and require manual
     approval.
   ready: true
-  status: todo
+  status: in_progress
   area_allowlist:
   - tools/ai_security/synthguard.py
   - tests/test_ai_security_009.py
