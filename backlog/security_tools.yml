@@ -1293,7 +1293,7 @@ security_tools:
     \ rate increase \u2264 0.1% with capture enabled under defined workload; auto-throttle\
     \ engages when thresholds are exceeded."
   ready: true
-  status: todo
+  status: needs_work
   area_allowlist:
   - tools/forensics/lambdatrace_snapshotter.py
   - tests/test_forensics_006.py
