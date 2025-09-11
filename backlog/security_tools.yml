@@ -1264,7 +1264,7 @@ security_tools:
   - Identify projected token audiences that are overly broad or missing; recommend
     constrained audiences and validate fix through re-scan.
   ready: true
-  status: todo
+  status: needs_work
   area_allowlist:
   - tools/cloud/kubeidentity_tripwire.py
   - tests/test_cloud_008.py
@@ -1975,4 +1975,89 @@ security_tools:
   area_allowlist:
   - tools/mobile/modelguard_mobile.py
   - tests/test_mobile_004.py
+  max_changed_lines: 500
+- id: AI_SECURITY-016
+  title: 'EvalGuard: LLM Eval Integrity & Leaderboard Fraud Auditor'
+  category: ai_security
+  description: Audits LLM evaluation datasets, prompts, harness configs, and run artifacts
+    to detect contamination, leakage, collusion, and leaderboard gaming. Verifies
+    dataset/model provenance via signed attestations, computes fuzzy/semantic overlap
+    with training corpora, detects few-shot/answer leakage, and emits signed, reproducible
+    reports that can gate CI/CD promotions.
+  security_requirements:
+  - Use cryptographic hashing and content-defined chunking to fingerprint datasets
+    and prompts; store only salted hashes and embeddings to avoid plaintext leakage.
+  - Verify signatures and provenance (Sigstore/in-toto) for datasets, model weights,
+    and eval harness; produce append-only, timestamped attestations for all runs.
+  - Provide safe redaction and PII filtering for prompts/outputs; enforce sandboxed
+    evaluation environments with egress allowlists and tamper-evident logs.
+  acceptance_tests:
+  - Detects eval contamination when >10% of eval items semantically match the training
+    corpus above a configured threshold and blocks leaderboard submission with a signed
+    attestation.
+  - Identifies prompt templates that leak reference answers or chain-of-thought and
+    flags the run as policy-violating with a redacted, reproducible report.
+  - Verifies dataset and harness signatures; if any artifact is unsigned or missing
+    an attestation, quarantines the run and emits an immutable audit record.
+  ready: true
+  status: todo
+  area_allowlist:
+  - tools/ai_security/evalguard.py
+  - tests/test_ai_security_evalguard.py
+  max_changed_lines: 500
+- id: NET-007
+  title: 'BrokerShade IDS: MQTT5/AMQP Covert Exfil Hunter'
+  category: network
+  description: A privacy-preserving IDS for encrypted MQTT5 and AMQP over TLS that
+    profiles topic hierarchy entropy, retained message abuse, QoS patterns, user property
+    size/frequency, clientID churn, and will-message anomalies. Correlates broker
+    fingerprints, SNI/ALPN metadata, and timing features to detect covert data exfiltration
+    without decrypting payloads.
+  security_requirements:
+  - Do not decrypt payloads; analyze only metadata and timing. Minimize PII by hashing
+    client IDs and topic strings with a rotating keyed hash.
+  - Maintain allowlists for approved brokers and topic namespaces; alert only on deviations
+    surpassing statistical baselines to reduce false positives.
+  - Produce signed, tamper-evident alert logs and support sealing of flow metadata/PCAP
+    headers for downstream forensics.
+  acceptance_tests:
+  - Flags a covert exfil scenario where a client encodes data in MQTT user properties
+    across bursts with anomalous size/timing entropy.
+  - Detects retained-message beacons to an unapproved topic namespace and correlates
+    with an unknown broker JA3/ALPN fingerprint.
+  - Operates without payload visibility and demonstrates <1% false positive rate on
+    a clean baseline replay with allowlists applied.
+  ready: true
+  status: todo
+  area_allowlist:
+  - tools/network/brokershade_ids.py
+  - tests/test_network_brokershade_ids.py
+  max_changed_lines: 500
+- id: IOT-008
+  title: 'OTA Sentinel: IoT TUF/Uptane Update Supply Chain Auditor'
+  category: iot
+  description: Audits IoT OTA update pipelines and devices for TUF/Uptane compliance,
+    signature verification, rollback/fast-forward protections, and transparency log
+    inclusion. Seeds signed canary updates, simulates update flows in lab mode, validates
+    metadata expiration and root key rotation, and emits policy-gated remediations
+    with signed attestations.
+  security_requirements:
+  - Verify multi-role signatures (root/targets/timestamp/snapshot) and key rotation
+    policies; validate transparency log inclusion proofs and external time-stamping.
+  - Sandbox update clients in hermetic emulation to observe endpoints, enforce egress
+    allowlists, and detect secrets/credential exposure during update.
+  - Preserve privacy by redacting device identifiers and storing only salted hashes;
+    emit sealed evidence bundles for any integrity failures.
+  acceptance_tests:
+  - Detects a rollback attack using stale but signed targets metadata, blocks installation,
+    and generates remediation steps with a signed report.
+  - Fails an update whose artifacts lack transparency log entries or have mismatched
+    digests; quarantines the OTA channel and alerts.
+  - Runs a canary update simulation in lab mode and validates device policy enforcement
+    (pinning, metadata expiration) without impacting production devices.
+  ready: true
+  status: todo
+  area_allowlist:
+  - tools/iot/ota_sentinel.py
+  - tests/test_iot_ota_sentinel.py
   max_changed_lines: 500
