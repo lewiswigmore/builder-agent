@@ -1379,7 +1379,7 @@ security_tools:
     matching and reputation feeds, generating a medium-severity finding with suggested
     blocklist updates.
   ready: true
-  status: in_progress
+  status: needs_work
   area_allowlist:
   - tools/threat_hunting/shadowpipeline_hunter.py
   - tests/test_threat_hunting_004.py
