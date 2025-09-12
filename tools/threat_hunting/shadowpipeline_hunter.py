@@ -261,7 +261,8 @@ class EvidenceBundle:
 
 class ShadowPipelineHunter:
     def __init__(self, url: str, out_dir: str, allowlist: Optional[List[str]] = None,
-                 max_time: int = DEFAULT_TIMEOUT, constrained_egress: bool = True):
+                 max_time: int = DEFAULT_TIMEOUT, constrained_egress: bool = True,
+                 sign_algo: Optional[str] = None):
         self.url = url
         self.out_dir = out_dir
         self.allowlist = allowlist or []
@@ -277,6 +278,9 @@ class ShadowPipelineHunter:
         self.script_sri_map: Dict[str, Optional[str]] = {}
         self.script_html_map: Dict[str, str] = {}
         self.blocklist_enforce: List[str] = []
+        self.sign_algo = sign_algo
+        self._policy_require_sri = True  # enforcement in test harness
+        self._enforce_allowlist_scripts = True
 
     async def run(self):
         print(ETHICAL_WARNING, file=sys.stderr)
@@ -298,7 +302,7 @@ class ShadowPipelineHunter:
         # Determine enforcement list for mismatched SRI
         self.blocklist_enforce = [u for u, integ in self.script_sri_map.items() if integ == "__SRI_MISMATCH__"]
         if self.blocklist_enforce:
-            # Enforcement pass (block mismatched)
+            # Enforcement pass (block mismatched and policy violations)
             await self._browse(async_playwright, enforce_policy=True)
 
         # Build evidence bundle
@@ -313,7 +317,7 @@ class ShadowPipelineHunter:
         bundle.add_text("scripts_dump.html", scripts_dump)
         # Findings as text for quick glance
         bundle.add_text("findings.txt", "\n".join([f"{f.severity} {f.type}: {f.description}" for f in self.findings]))
-        archive = bundle.seal(self.findings)
+        archive = bundle.seal(self.findings, sign_algo=self.sign_algo)
         print(f"Evidence bundle sealed and archived at: {archive}")
 
     async def _browse(self, async_playwright, enforce_policy: bool = False):
@@ -349,10 +353,10 @@ class ShadowPipelineHunter:
                 host = parsed.hostname or ""
                 rtype = request.resource_type
                 ts = time.time()
+                target_host = urlparse(self.url).hostname or ""
                 # Egress control
                 if self.constrained_egress:
                     # Allow target host and allowlist only
-                    target_host = urlparse(self.url).hostname or ""
                     allowed = [target_host] + self.allowlist
                     if not domain_allowed(host, allowed):
                         # log blocked request
@@ -370,8 +374,9 @@ class ShadowPipelineHunter:
                         self.response_logs.append(ResponseRecord(ts=time.time(), url=url, status=0, status_text="BLOCKED (egress)", headers={}, body_hash=sha256_b64(b""), body_len=0, req_id=str(id(request))))
                         return await route.abort()
 
-                # Enforcement pass: block known mismatched SRI scripts
+                # Enforcement pass: block known mismatched SRI scripts and policy-violating sources
                 if enforce_policy and rtype == "script":
+                    # Block explicit mismatches
                     for blocked in self.blocklist_enforce:
                         if url.startswith(blocked):
                             await route.fulfill(status=200, headers={"Content-Type": "text/javascript"},
@@ -382,7 +387,42 @@ class ShadowPipelineHunter:
                                 description=f"Blocked script due to SRI mismatch: {url}",
                                 evidence={"url": url}
                             ))
-                            # log request and synthetic response
+                            try:
+                                self.request_logs.append(RequestRecord(ts=ts, method=request.method, url=url, headers=request.headers, post_data=request.post_data or None, resource_type=rtype, req_id=str(id(request))))
+                            except Exception:
+                                self.request_logs.append(RequestRecord(ts=ts, method=request.method, url=url, headers={}, post_data=None, resource_type=rtype, req_id=str(id(request))))
+                            self.response_logs.append(ResponseRecord(ts=time.time(), url=url, status=200, status_text="OK (blocked)", headers={"Content-Type":"text/javascript"}, body_hash=sha256_b64(b""), body_len=0, req_id=str(id(request))))
+                            return
+                    # Enforce allow-listed script sources
+                    if self._enforce_allowlist_scripts:
+                        allowed = [target_host] + self.allowlist
+                        if not domain_allowed(host, allowed):
+                            await route.fulfill(status=200, headers={"Content-Type": "text/javascript"},
+                                                body=b"/* Blocked by ShadowPipeline Hunter: source not allow-listed */")
+                            self.findings.append(Finding(
+                                type="script_block_policy",
+                                severity="medium",
+                                description=f"Blocked script from non-allowlisted domain {host}",
+                                evidence={"url": url, "host": host}
+                            ))
+                            try:
+                                self.request_logs.append(RequestRecord(ts=ts, method=request.method, url=url, headers=request.headers, post_data=request.post_data or None, resource_type=rtype, req_id=str(id(request))))
+                            except Exception:
+                                self.request_logs.append(RequestRecord(ts=ts, method=request.method, url=url, headers={}, post_data=None, resource_type=rtype, req_id=str(id(request))))
+                            self.response_logs.append(ResponseRecord(ts=time.time(), url=url, status=200, status_text="OK (blocked)", headers={"Content-Type":"text/javascript"}, body_hash=sha256_b64(b""), body_len=0, req_id=str(id(request))))
+                            return
+                    # Enforce SRI for third-party scripts
+                    if self._policy_require_sri and host != target_host:
+                        integ = self.script_sri_map.get(url)
+                        if not integ:
+                            await route.fulfill(status=200, headers={"Content-Type": "text/javascript"},
+                                                body=b"/* Blocked by ShadowPipeline Hunter: missing SRI */")
+                            self.findings.append(Finding(
+                                type="sri_missing_block",
+                                severity="medium",
+                                description=f"Blocked third-party script without SRI: {url}",
+                                evidence={"url": url, "host": host}
+                            ))
                             try:
                                 self.request_logs.append(RequestRecord(ts=ts, method=request.method, url=url, headers=request.headers, post_data=request.post_data or None, resource_type=rtype, req_id=str(id(request))))
                             except Exception:
@@ -479,6 +519,15 @@ class ShadowPipelineHunter:
                     self.script_html_map[src] = html
                     if src not in self.script_sri_map:
                         self.script_sri_map[src] = integ or None
+                else:
+                    # Inline script snapshot (potential injection evidence)
+                    if html:
+                        # Store inline scripts keyed by a pseudo-url with hash
+                        h = sha256_b64(html.encode("utf-8"))
+                        key = f"inline://{h}"
+                        self.script_html_map[key] = html
+                        if key not in self.script_sri_map:
+                            self.script_sri_map[key] = None
 
             # Close
             await context.close()
@@ -617,7 +666,8 @@ def main():
 
     allowlist = [a.strip() for a in args.allow.split(",") if a.strip()]
     hunter = ShadowPipelineHunter(url=args.url, out_dir=args.out, allowlist=allowlist,
-                                  max_time=args.timeout, constrained_egress=(not args.no_constrain))
+                                  max_time=args.timeout, constrained_egress=(not args.no_constrain),
+                                  sign_algo=args.sign)
     try:
         asyncio.run(hunter.run())
     except KeyboardInterrupt:
