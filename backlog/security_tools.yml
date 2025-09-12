@@ -1350,7 +1350,7 @@ security_tools:
   - A non-rotating KMS key with mismatched alias across regions is detected and reported
     with drift details and remediation steps.
   ready: true
-  status: todo
+  status: needs_work
   area_allowlist:
   - tools/cloud/keytrace_guardian.py
   - tests/test_cloud_009.py
@@ -2060,4 +2060,98 @@ security_tools:
   area_allowlist:
   - tools/iot/ota_sentinel.py
   - tests/test_iot_ota_sentinel.py
+  max_changed_lines: 500
+- id: NET-008
+  title: LLM API Egress Sentinel
+  category: network
+  description: "A privacy-preserving IDS that detects covert data exfiltration and\
+    \ abuse over AI/LLM APIs (OpenAI/Anthropic/Vertex/GPT proxies) by profiling HTTP/2+SSE\
+    \ and HTTP/3/QUIC timing/size cadence, JA4/JA4S fingerprints, token-cadence patterns,\
+    \ and domain-fronted relay anomalies\u2014without decrypting payloads. Correlates\
+    \ API key usage, client fingerprints, and policy allowlists; emits signed, forensically\
+    \ sound evidence bundles."
+  security_requirements:
+  - Operate without payload decryption; process only flow metadata, headers, and timing
+    for PII minimization and privacy compliance.
+  - Support TLS 1.3/QUIC fingerprinting (JA4/JA4S), HTTP/2 frame patterning, SSE/gRPC
+    stream detection, and anomaly scoring with explainable features.
+  - Produce cryptographically signed, timestamped, and tamper-evident evidence bundles
+    and alerts anchored to transparency logs or external timestamping.
+  acceptance_tests:
+  - Simulate normal LLM streaming completions vs. staged exfil runs (large SSE chunks
+    with high-entropy size bursts); verify only exfil flows are flagged with high
+    confidence and include signed evidence.
+  - Detect domain-fronted exfiltration to AI API endpoints via mismatched SNI/ALPN
+    and abnormal QUIC spin-bit/timing patterns; confirm alert includes JA4/JA4S and
+    flow feature summaries.
+  - Correlate anomalous API key reuse across disparate client fingerprints/IPs within
+    a time window; verify a single, deduplicated incident with chain-of-custody, signed
+    artifacts, and remediation hints is generated.
+  ready: true
+  status: todo
+  area_allowlist:
+  - tools/network/llm_api_egress_sentinel.py
+  - tests/test_network_net_008.py
+  max_changed_lines: 500
+- id: CLOUD-015
+  title: 'ShadowPipeline Guard: CI Artifact Promotion Policy Enforcer'
+  category: cloud
+  description: "Builds an end-to-end provenance graph for CI/CD artifacts across GitHub/GitLab/CircleCI\
+    \ and registries (ECR/ACR/GAR/Docker Hub), verifies in-toto/SLSA attestations\
+    \ with Sigstore (Fulcio/Rekor), detects out-of-band promotions (OIDC trust misbinding,\
+    \ unsigned tags, cross-tenant replications), and seeds namespaced canary artifacts\
+    \ to detect rogue promotions\u2014enforcing policy-as-code gates with signed findings."
+  security_requirements:
+  - Use least-privilege, read-only access to CI/CD logs, OIDC identities, registries,
+    and SBOM/attestation stores; never require broad admin tokens.
+  - Validate signatures, attestations, and transparency log inclusion (Rekor) for
+    each promotion; block or quarantine artifacts on policy failure.
+  - Generate and rotate namespaced canary artifacts and provenance; emit signed, immutable
+    alerts and provide automated rollback/remediation-as-code.
+  acceptance_tests:
+  - Introduce an unsigned artifact promoted to a protected environment; ensure the
+    tool blocks promotion, surfaces the failing attestation path, and emits a signed
+    incident with remediation steps.
+  - Simulate OIDC trust misbinding by replaying a federated token from an unexpected
+    workflow context; verify detection, scope analysis, and recommended identity boundary
+    fixes.
+  - Replicate a tagged image to an unsanctioned external registry; confirm canary/policy
+    violation is detected, quarantine is applied, and cross-registry lineage is reported
+    with signed evidence.
+  ready: true
+  status: todo
+  area_allowlist:
+  - tools/cloud/shadowpipeline_guard.py
+  - tests/test_cloud_cloud_015.py
+  max_changed_lines: 500
+- id: IOT-009
+  title: 'OT Edge Shield: OPC UA/Profinet Secure Telemetry IDS & Fuzzer'
+  category: iot
+  description: A passive-first IDS and lab-safe protocol fuzzer for industrial networks
+    (OPC UA, Profinet, TSN). Profiles encrypted session lifecycles, cert chains, cipher
+    posture, and deterministic cycle timing to detect covert channels and misconfigurations.
+    In lab mode, performs stateful, rate-limited fuzzing of services (e.g., GSDML-defined
+    parameters), validates device safety signals, and seals cryptographic evidence
+    bundles.
+  security_requirements:
+  - Default to passive monitoring in production; permit active fuzzing only in isolated
+    lab segments with strict rate limits and safety cutoffs.
+  - Support hardware timestamping and precise jitter analysis; validate certificate
+    chains, revocation, and minimum cipher/policy baselines for OPC UA.
+  - Produce sealed, signed PCAPs, timing traces, and protocol transcripts with external
+    timestamp anchoring for court-ready evidence.
+  acceptance_tests:
+  - Detect an unauthorized OPC UA server advertising weak or mismatched certificates/ciphers;
+    verify alert includes chain validation details and recommended policy fixes.
+  - Identify anomalous Profinet cycle jitter consistent with covert data encoding;
+    confirm detection with timing feature summaries and low false positives on baseline
+    traffic.
+  - Run the lab-mode fuzzer against a test device; verify safety limits (rate/abort
+    on DCP alarms) are enforced, and output includes signed transcripts and reproducible
+    seeds.
+  ready: true
+  status: todo
+  area_allowlist:
+  - tools/iot/ot_edge_shield.py
+  - tests/test_iot_iot_009.py
   max_changed_lines: 500
