@@ -139,7 +139,8 @@ class FuzzyDomainMatcher:
         return None
 
 def sha256_b64(data: bytes) -> str:
-    return hashlib.sha256(data).digest().hex()
+    # Returns hex digest of SHA-256 for integrity logging (name kept for compatibility)
+    return hashlib.sha256(data).hexdigest()
 
 def sri_hashes(data: bytes) -> Dict[str, str]:
     import base64
@@ -242,12 +243,9 @@ class EvidenceBundle:
             with open(manifest_path, "rb") as f:
                 data = f.read()
             sig = sign(sk, data)
-            if algo_name == "ed25519":
-                self.add_bytes("signature.sig", sig)
-                self.add_bytes("public_key.pem", pub)
-            else:
-                self.add_bytes("signature.sig", sig)
-                self.add_bytes("public_key.pem", pub)  # contains method indicator (e.g., "HMAC-SHA256")
+            self.add_bytes("signature.sig", sig)
+            # For HMAC, this file indicates method; for ed25519 it's actual public key
+            self.add_bytes("public_key.pem", pub)
             self.manifest["signing"] = {
                 "algorithm": algo_name,
                 "signature_file": "signature.sig",
@@ -283,7 +281,7 @@ class ShadowPipelineHunter:
     async def run(self):
         print(ETHICAL_WARNING, file=sys.stderr)
         try:
-            from playwright.async_api import async_playwright, TimeoutError as PWTimeout
+            from playwright.async_api import async_playwright, TimeoutError as PWTimeout  # noqa: F401
         except Exception as e:
             raise RuntimeError("Playwright is required. Install with 'pip install playwright' and run 'playwright install'") from e
 
@@ -306,7 +304,9 @@ class ShadowPipelineHunter:
         # Build evidence bundle
         bundle = EvidenceBundle(self.out_dir)
         bundle.add_text("console.log", "\n".join([json.dumps(x) for x in self._console_to_jsonlines()]))
-        bundle.add_text("pcap.ndjson", "\n".join([json.dumps(dataclasses.asdict(r)) for r in self.request_logs] + [json.dumps(dataclasses.asdict(r)) for r in self.response_logs]))
+        # Combine request/response logs into a single NDJSON stream
+        pcap_lines = [json.dumps(dataclasses.asdict(r)) for r in self.request_logs] + [json.dumps(dataclasses.asdict(r)) for r in self.response_logs]
+        bundle.add_text("pcap.ndjson", "\n".join(pcap_lines))
         dom_snapshot = self._dom_snapshot if hasattr(self, "_dom_snapshot") else ""
         bundle.add_text("dom_snapshot.html", dom_snapshot)
         scripts_dump = "\n<!-- scripts dump -->\n".join([f"<!-- {u} -->\n{self.script_html_map.get(u,'')}" for u in self.script_html_map])
@@ -355,12 +355,19 @@ class ShadowPipelineHunter:
                     target_host = urlparse(self.url).hostname or ""
                     allowed = [target_host] + self.allowlist
                     if not domain_allowed(host, allowed):
+                        # log blocked request
+                        try:
+                            self.request_logs.append(RequestRecord(ts=ts, method=request.method, url=url, headers=request.headers, post_data=request.post_data or None, resource_type=rtype, req_id=str(id(request))))
+                        except Exception:
+                            self.request_logs.append(RequestRecord(ts=ts, method=request.method, url=url, headers={}, post_data=None, resource_type=rtype, req_id=str(id(request))))
                         self.findings.append(Finding(
                             type="egress_block",
                             severity="info",
                             description=f"Blocked egress to {host} due to constrained policy",
                             evidence={"url": url}
                         ))
+                        # synthesize a blocked response record for integrity trail
+                        self.response_logs.append(ResponseRecord(ts=time.time(), url=url, status=0, status_text="BLOCKED (egress)", headers={}, body_hash=sha256_b64(b""), body_len=0, req_id=str(id(request))))
                         return await route.abort()
 
                 # Enforcement pass: block known mismatched SRI scripts
@@ -375,13 +382,19 @@ class ShadowPipelineHunter:
                                 description=f"Blocked script due to SRI mismatch: {url}",
                                 evidence={"url": url}
                             ))
-                            # log request
-                            self.request_logs.append(RequestRecord(ts=ts, method=request.method, url=url, headers=request.headers, post_data=request.post_data or None, resource_type=rtype, req_id=str(id(request))))
+                            # log request and synthetic response
+                            try:
+                                self.request_logs.append(RequestRecord(ts=ts, method=request.method, url=url, headers=request.headers, post_data=request.post_data or None, resource_type=rtype, req_id=str(id(request))))
+                            except Exception:
+                                self.request_logs.append(RequestRecord(ts=ts, method=request.method, url=url, headers={}, post_data=None, resource_type=rtype, req_id=str(id(request))))
                             self.response_logs.append(ResponseRecord(ts=time.time(), url=url, status=200, status_text="OK (blocked)", headers={"Content-Type":"text/javascript"}, body_hash=sha256_b64(b""), body_len=0, req_id=str(id(request))))
                             return
 
                 # Proceed and capture
-                self.request_logs.append(RequestRecord(ts=ts, method=request.method, url=url, headers=request.headers, post_data=request.post_data or None, resource_type=rtype, req_id=str(id(request))))
+                try:
+                    self.request_logs.append(RequestRecord(ts=ts, method=request.method, url=url, headers=request.headers, post_data=request.post_data or None, resource_type=rtype, req_id=str(id(request))))
+                except Exception:
+                    self.request_logs.append(RequestRecord(ts=ts, method=request.method, url=url, headers={}, post_data=None, resource_type=rtype, req_id=str(id(request))))
                 await route.continue_()
 
             await context.route("**/*", route_handler)
@@ -520,7 +533,6 @@ class ShadowPipelineHunter:
         if not doc_resps:
             return
         # The latest response headers for main document
-        # We stored headers in ResponseRecord.headers
         main_headers = {}
         for r in doc_resps:
             main_headers = r.headers
@@ -537,7 +549,7 @@ class ShadowPipelineHunter:
         else:
             if "'unsafe-inline'" in script_src or "*" in script_src or "'unsafe-eval'" in script_src:
                 issues.append(f"Weak script-src policy: {script_src}")
-        if "require-sri-for" not in policy and "require-sri-for" not in [k for k in policy]:
+        if "require-sri-for" not in policy:
             issues.append("Missing 'require-sri-for' directive for scripts.")
         if issues:
             self.findings.append(Finding(
