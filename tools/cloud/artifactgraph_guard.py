@@ -371,7 +371,7 @@ class ArtifactGraphGuard:
                         id=fid,
                         severity="high",
                         title="OIDC/Webhook trust-policy mismatch detected",
-                        description=f"Replication rule {rule.id} uses OIDC/webhook with {', '.join(issues)}.",
+                        description=f"Replication rule {rule.id} uses OIDC/webhook with {, '.join(issues)}.",
                         remediation=[
                             "Update trust policy to include the required issuer/audience if appropriate.",
                             "Correct the replication configuration to use only approved issuers and audiences.",
