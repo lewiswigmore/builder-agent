@@ -1406,7 +1406,7 @@ security_tools:
   - Membership inference risk score above a configurable threshold triggers quarantine
     of the model artifact and a reproducible evidence bundle is stored.
   ready: true
-  status: todo
+  status: needs_work
   area_allowlist:
   - tools/ai_security/finetune_sentinel.py
   - tests/test_ai_security_011.py
