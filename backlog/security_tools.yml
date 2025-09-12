@@ -1434,7 +1434,7 @@ security_tools:
   - Cross-cloud replication using OIDC/webhooks with audience/issuer mismatch is flagged
     and blocked pending trust-policy correction.
   ready: true
-  status: todo
+  status: needs_work
   area_allowlist:
   - tools/cloud/artifactgraph_guard.py
   - tests/test_cloud_010.py
@@ -2155,3 +2155,123 @@ security_tools:
   - tools/iot/ot_edge_shield.py
   - tests/test_iot_iot_009.py
   max_changed_lines: 500
+- id: AI_SECURITY-017
+  title: 'LoRA MergeGuard: PEFT Backdoor & Adapter Drift Auditor'
+  category: ai_security
+  description: Audits LoRA/PEFT adapters and merges for backdoors, provenance, and
+    safety regressions. Verifies signatures/SBOMs, runs activation clustering and
+    spectral signatures on adapter deltas, seeds canary triggers, and gates promotions
+    with signed, reproducible attestations.
+  security_requirements:
+  - All analyses run in sandboxed, offline environments with strict egress allowlists
+    and red-team-safe canary data.
+  - Adapters and merges must carry signed provenance (Sigstore/in-toto); unsigned
+    artifacts are quarantined and attestations emitted.
+  - Privacy-preserving telemetry only; immutable, timestamped evidence bundles with
+    chain-of-custody and reproducible seeds.
+  acceptance_tests:
+  - Load a known backdoored LoRA adapter and detect triggerable behavior via activation
+    clustering and spectral signatures; block merge and emit a signed attestation.
+  - Attempt to load an unsigned adapter lacking provenance; refuse execution, quarantine
+    artifact, and record a policy-violation attestation.
+  - Merge multiple adapters into a base model and flag abnormal delta-norm drift and
+    trigger activations exceeding thresholds; generate remediation steps and require
+    re-approval.
+  ready: true
+  status: todo
+  area_allowlist:
+  - tools/ai_security/lora_mergeguard.py
+  - tests/test_ai_security_017.py
+  max_changed_lines: 500
+- id: CLOUD-016
+  title: 'SnapLeak Sentinel: Cloud Snapshot Exposure & Remanence Auditor'
+  category: cloud
+  description: Continuously audits AWS EBS, GCP Persistent Disk, and Azure Managed
+    Disk snapshots for public/external sharing, KMS policy drift, and data remanence.
+    Seeds signed canary blocks, validates encryption and sharing ACLs, simulates cross-account
+    restores, and outputs remediation-as-code with signed findings.
+  security_requirements:
+  - Agentless, read-only discovery by default; canary writes use namespaced, reversible
+    patterns with scoped roles and rate limits.
+  - "Cryptographic attestations for findings (Sigstore) and immutable logs; no customer\
+    \ data exfiltration\u2014only canary signatures and metadata."
+  - Auto-remediation supports dry-run and policy-as-code (OPA/Terraform patches) with
+    explicit approval gates.
+  acceptance_tests:
+  - Detect a publicly shared snapshot (or shared to an external account) across AWS/Azure/GCP
+    and produce a high-severity finding with IaC remediation patch.
+  - Write a signed canary pattern to a volume, snapshot and delete volume, then restore
+    in a separate account; detect canary remanence and emit a signed alert.
+  - Identify encryption/key-policy drift (unencrypted snapshot or KMS key with overbroad
+    grants) and suggest least-privilege remediation; verify dry-run produces correct
+    plan.
+  ready: true
+  status: todo
+  area_allowlist:
+  - tools/cloud/snapleak_sentinel.py
+  - tests/test_cloud_016.py
+  max_changed_lines: 500
+- id: THREAT_HUNTING-005
+  title: 'ExtensionSleuth: Browser Extension Supply Chain Hunter'
+  category: threat_hunting
+  description: "Detects malicious updates and supply-chain abuse in Chrome/Edge/Firefox\
+    \ extensions by diffing permissions/manifest changes, verifying signatures, profiling\
+    \ runtime egress with headless browsers, and seeding DOM/API canaries to catch\
+    \ skimming and covert exfil\u2014producing sealed evidence bundles."
+  security_requirements:
+  - Headless instrumentation runs in isolated sandboxes with network egress allowlists
+    and rate limits to avoid collateral impact.
+  - Extension packages and update manifests must be signature-verified; unsigned/sideloaded
+    artifacts are quarantined with signed attestations.
+  - Evidence bundles (HTML/console logs/PCAP summaries) are redacted, timestamped,
+    and cryptographically sealed for forensics.
+  acceptance_tests:
+  - On an extension update, detect permission creep (e.g., new host_permissions or
+    dangerous APIs) and flag a regression with a signed report.
+  - Profile runtime and identify new egress endpoints (domains/CDNs) not present in
+    the prior version; raise alert and store sealed evidence bundle.
+  - Detect a sideloaded, unsigned extension; quarantine it, revoke permissions via
+    managed policy, and emit a signed incident attestation.
+  ready: true
+  status: todo
+  area_allowlist:
+  - tools/threat_hunting/extensionsleuth.py
+  - tests/test_threat_hunting_005.py
+  max_changed_lines: 500
+- id: ZT-001
+  title: 'MicroTrace ZT: Identity-Aware Microsegmentation Simulator'
+  category: zero_trust
+  description: Simulates and validates Zero Trust policies for service-to-service
+    communication using identity-based microsegmentation, continuous authentication,
+    and just-in-time authorization; supports policy synthesis from traffic traces
+    and SPIFFE/SVID attestations.
+  security_requirements:
+  - Deny-by-default enforcement model; least-privilege policy synthesis with explicit
+    allow rules and bounded egress.
+  - mTLS with PFS required on all links; ephemeral certificate rotation with short-lived
+    SVIDs; OCSP/CRL checks or stapled status when available.
+  - All policy bundles are signed, versioned, and immutable; policy diffing and rollback
+    require threshold signatures.
+  - Secrets never logged; in-memory only with auto-scrub; hardware-backed keys (TPM/HSM)
+    used when available.
+  - Continuous authentication and authorization re-evaluation; token revocation or
+    cert expiry terminates sessions within strict SLAs.
+  - Deterministic simulation engine with auditable trace of decisions and cryptographic
+    attestations.
+  acceptance_tests:
+  - "Given traffic between services A, B, C where A\u2192B gRPC and B\u2192C HTTP\
+    \ are allowed and all else denied, the tool infers a minimal policy, encodes it\
+    \ as a signed bundle, simulates enforcement, and verifies that denied flows yield\
+    \ explicit policy verdicts. When B\u2019s identity rotates, new certs are issued\
+    \ and re-authentication occurs within 5 seconds; stale sessions are dropped."
+  - "With SPIFFE identities spiffe://prod/ns/payments/sa/api and spiffe://prod/ns/ledger/sa/worker,\
+    \ the tool validates SVID chains, enforces mTLS, and re-authenticates every 60\
+    \ seconds. If the worker\u2019s token is revoked mid-session, the simulator terminates\
+    \ the stream within 2 seconds and emits an alert containing a correlation ID and\
+    \ policy reference."
+  ready: true
+  status: todo
+  area_allowlist:
+  - tools/zero_trust/microtrace_zt.py
+  - tests/test_zt_001.py
+  max_changed_lines: 700
