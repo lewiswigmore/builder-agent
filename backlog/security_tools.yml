@@ -1434,7 +1434,7 @@ security_tools:
   - Cross-cloud replication using OIDC/webhooks with audience/issuer mismatch is flagged
     and blocked pending trust-policy correction.
   ready: true
-  status: in_progress
+  status: needs_work
   area_allowlist:
   - tools/cloud/artifactgraph_guard.py
   - tests/test_cloud_010.py
