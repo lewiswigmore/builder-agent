@@ -25,7 +25,6 @@ import hmac
 import json
 import os
 import sys
-import time
 import uuid
 from dataclasses import dataclass, asdict
 from typing import Any, Dict, List, Optional, Tuple, Union, Iterable
@@ -195,14 +194,11 @@ class Alert:
 def normalize_alias(alias: Optional[str]) -> Optional[str]:
     if not alias:
         return None
-    # Strip common prefixes and trailing region suffixes like "-us-east-1"
     a = alias
     if a.startswith("alias/"):
         a = a[len("alias/") :]
-    # Remove region suffix if present (heuristic)
     parts = a.rsplit("-", maxsplit=3)
     if len(parts) >= 3 and parts[-3] in {"us", "eu", "ap", "sa", "ca", "me", "af"}:
-        # Looks like region-ish suffix; retain base parts except last 2-3
         a = "-".join(parts[:-3])
     return a
 
@@ -222,7 +218,6 @@ def has_wildcard_principal(policy: Dict[str, Any]) -> Tuple[bool, List[str]]:
                 (v == "*" or (isinstance(v, list) and "*" in v)) for v in principal.values()
             )):
                 matches.append(f"Statement[{i}].Principal")
-            # Also check Condition with aws:PrincipalArn if wildcard
             cond = st.get("Condition", {})
             if _condition_has_wildcard_principal(cond):
                 matches.append(f"Statement[{i}].Condition")
@@ -257,7 +252,6 @@ def detect_cross_account_grants(grants: List[Dict[str, Any]], key_account: Optio
 
 
 def _extract_account_from_arn(arn: str) -> Optional[str]:
-    # arn:partition:service:region:account-id:resource
     if not arn.startswith("arn:"):
         return None
     parts = arn.split(":")
@@ -271,13 +265,11 @@ def generate_canary_token() -> str:
 
 
 def placeholder_encrypt(token: str, key_id: str, provider: str) -> str:
-    # Placeholder "ciphertext" using HMAC(key_id+provider, token)
     key = hashlib.sha256((key_id + ":" + provider).encode("utf-8")).digest()
     return base64.b64encode(hmac.new(key, token.encode("utf-8"), hashlib.sha256).digest()).decode("ascii")
 
 
 def build_least_privilege_policy_example(principals: List[str], aws_account: Optional[str] = None) -> Dict[str, Any]:
-    # Example policy snippet limiting Decrypt/Encrypt to specified principals and EC condition
     cond = {
         "StringEquals": {
             f"kms:EncryptionContext:{CANARY_CONTEXT_KEY}": "DENY-ALL-NON-CANARY"
@@ -383,7 +375,6 @@ def create_alert(signer: Signer, provider: str, region: Optional[str], account: 
 def audit_inventory(inventory: List[Dict[str, Any]], signer: Signer,
                     allowed_accounts: Optional[List[str]] = None) -> List[Finding]:
     findings: List[Finding] = []
-    # Group for alias drift detection
     groups: Dict[Tuple[str, str, Optional[str]], List[Dict[str, Any]]] = {}
 
     for item in inventory:
@@ -396,7 +387,6 @@ def audit_inventory(inventory: List[Dict[str, Any]], signer: Signer,
         key_policy = item.get("key_policy") or {}
         grants = item.get("grants") or []
 
-        # Wildcard principal in key policy
         wildcard, paths = has_wildcard_principal(key_policy)
         if wildcard:
             title = "KMS key policy grants wildcard principal"
@@ -417,7 +407,6 @@ def audit_inventory(inventory: List[Dict[str, Any]], signer: Signer,
             evidence = {"policy_paths": paths, "policy": key_policy}
             findings.append(create_finding(signer, "HIGH", title, desc, res, rem, evidence))
 
-        # Cross-account grants
         cross = detect_cross_account_grants(grants, account, allowed_accounts)
         if cross:
             title = "Unintended cross-account KMS grant detected"
@@ -434,7 +423,6 @@ def audit_inventory(inventory: List[Dict[str, Any]], signer: Signer,
             evidence = {"grants": cross}
             findings.append(create_finding(signer, "HIGH", title, desc, res, rem, evidence))
 
-        # Rotation
         if rotation_enabled is False:
             title = "KMS key rotation is disabled"
             desc = f"Symmetric KMS key {key_id} in {provider}/{account}/{region} does not have rotation enabled."
@@ -449,12 +437,10 @@ def audit_inventory(inventory: List[Dict[str, Any]], signer: Signer,
             evidence = {"rotation_enabled": rotation_enabled}
             findings.append(create_finding(signer, "MEDIUM", title, desc, res, rem, evidence))
 
-        # Build grouping for alias drift
         base_alias = normalize_alias(alias)
         gkey = (provider, account or "", base_alias)
         groups.setdefault(gkey, []).append(item)
 
-    # Alias drift across regions
     for (provider, account, base_alias), items in groups.items():
         if base_alias is None or len(items) <= 1:
             continue
@@ -500,11 +486,10 @@ def parse_cloudtrail_record(rec: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         principal = user.get("arn") or user.get("principalId")
         src_ip = rec.get("sourceIPAddress")
         key_id = None
-        # CloudTrail may have 'resources' with KMS key
         resources = rec.get("resources") or []
         for r in resources:
             if r.get("type") == "AWS::KMS::Key":
-                key_id = r.get("ARN") or r.get("ARN") or r.get("resourceName")
+                key_id = r.get("ARN") or r.get("resourceName")
         region = rec.get("awsRegion")
         account = rec.get("recipientAccountId") or user.get("accountId")
         event_time = rec.get("eventTime")
@@ -526,19 +511,14 @@ def parse_cloudtrail_record(rec: Dict[str, Any]) -> Optional[Dict[str, Any]]:
 
 def parse_azure_activity_record(rec: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     try:
-        # Flexible matching for Key Vault key decrypt operations
         op_name = (rec.get("operationName") or {}).get("value") or rec.get("operationName") or ""
-        category = rec.get("category") or rec.get("Category") or ""
-        # Often captured via AzureDiagnostics with resourceType 'MICROSOFT.KEYVAULT/VAULTS'
         props = rec.get("properties") or {}
-        # Search for AAD in multiple potential fields
         token = None
         candidates = []
         if isinstance(props, dict):
             for k, v in props.items():
                 if isinstance(v, (str, dict, list)):
                     candidates.append((k, v))
-        # Flatten and search token
         token = _find_token_in_obj({k: v for k, v in candidates})
         if not token and isinstance(rec, dict):
             token = _find_token_in_obj(rec)
@@ -549,10 +529,8 @@ def parse_azure_activity_record(rec: Dict[str, Any]) -> Optional[Dict[str, Any]]
             return None
         principal = props.get("callerIdentity") or rec.get("caller") or rec.get("claims", {}).get("appid")
         src_ip = rec.get("callerIpAddress") or props.get("callerIpAddress")
-        # region is not trivial; resourceId may include location
         region = rec.get("location") or rec.get("resourceLocation")
         tenant = rec.get("tenantId") or rec.get("tenant")
-        # key id may be in resourceId
         rid = rec.get("resourceId") or ""
         key_id = rid
         event_time = rec.get("eventTimestamp") or rec.get("time")
@@ -579,8 +557,6 @@ def parse_gcp_audit_record(rec: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         if "Decrypt" not in method and "AsymmetricDecrypt" not in method:
             return None
         req = proto.get("request") or {}
-        token = None
-        # Search additionalAuthenticatedData or annotations
         token = _find_token_in_obj(req)
         if not token:
             return None
@@ -593,7 +569,6 @@ def parse_gcp_audit_record(rec: Dict[str, Any]) -> Optional[Dict[str, Any]]:
             project = resource["labels"].get("project_id")
         if not project:
             project = rec.get("resourceName", "").split("/projects/")[-1].split("/")[0] if rec.get("resourceName") else None
-        # region for KMS is location in resource name
         key_id = rec.get("resourceName") or method
         event_time = rec.get("timestamp") or rec.get("receiveTimestamp")
         return {
@@ -623,7 +598,6 @@ def _find_token_in_obj(obj: Any) -> Optional[str]:
                 else:
                     if k in ("additionalAuthenticatedData", "additional_authenticated_data", "aad"):
                         if isinstance(v, str) and CANARY_CONTEXT_KEY in v:
-                            # Expect format "<CANARY_CONTEXT_KEY>=<token>" or raw token
                             parts = v.split("=")
                             return parts[-1].strip()
                     if k in ("encryptionContext", "encryption_context") and isinstance(v, dict):
@@ -631,7 +605,6 @@ def _find_token_in_obj(obj: Any) -> Optional[str]:
                         if t:
                             return t
                     if isinstance(v, str) and CANARY_CONTEXT_KEY in v:
-                        # last resort: extract token-like suffix
                         parts = v.split(CANARY_CONTEXT_KEY)
                         return parts[-1].strip(" =:\"',{}[]")
         elif isinstance(obj, list):
@@ -656,7 +629,6 @@ def plant_canaries(inventory: List[Dict[str, Any]], signer: Signer,
         key_id = item.get("key_id")
         alias = item.get("alias")
         token = f"{CANARY_CONTEXT_KEY}:{generate_canary_token()}"
-        # In live mode, attempt provider SDK encryption; else placeholder
         ciphertext_b64 = placeholder_encrypt(token, key_id or "unknown", provider)
         issued_at = utcnow_iso()
         base = {
@@ -692,7 +664,6 @@ def plant_canaries(inventory: List[Dict[str, Any]], signer: Signer,
 
 def process_logs(log_paths: List[str], signer: Signer) -> List[Alert]:
     alerts: List[Alert] = []
-    # Process JSON or JSONL logs
     for path in log_paths:
         try:
             with open(path, "r", encoding="utf-8") as f:
@@ -704,7 +675,6 @@ def process_logs(log_paths: List[str], signer: Signer) -> List[Alert]:
                     try:
                         rec = json.loads(line)
                     except json.JSONDecodeError:
-                        # Could be a list in a single file
                         try:
                             obj = json.loads(open(path, "r", encoding="utf-8").read())
                             if isinstance(obj, list):
@@ -725,7 +695,6 @@ def process_logs(log_paths: List[str], signer: Signer) -> List[Alert]:
 
 
 def _alert_from_record(rec: Dict[str, Any], signer: Signer) -> Optional[Alert]:
-    # Try AWS, Azure, GCP in order
     parsers = [parse_cloudtrail_record, parse_azure_activity_record, parse_gcp_audit_record]
     for p in parsers:
         match = p(rec)
@@ -760,6 +729,65 @@ def _load_jsonl(path: str) -> Iterable[Dict[str, Any]]:
             yield json.loads(line)
 
 
+class KeyTraceGuardian:
+    """
+    Convenience class wrapper for KeyTrace Guardian operations.
+
+    Use read-only credentials and configure evidence sinks with customer-managed keys.
+    Default is dry_run=True which avoids writing any evidence.
+    """
+    def __init__(self,
+                 evidence_path: Optional[str] = None,
+                 evidence_kms: Optional[str] = None,
+                 dry_run: bool = True,
+                 signer: Optional[Signer] = None):
+        self.signer = signer or Signer()
+        self.dry_run = dry_run
+        self.sink: Optional[EvidenceSinkBase] = None
+        if not dry_run and evidence_path and evidence_kms:
+            self.sink = LocalFileEvidenceSink(evidence_path, evidence_kms)
+
+    def _maybe_write(self, record_type: str, rec: Dict[str, Any]) -> None:
+        if self.sink:
+            self.sink.write_record(record_type, rec)
+
+    def audit(self, inventory: List[Dict[str, Any]], allowed_accounts: Optional[List[str]] = None) -> List[Dict[str, Any]]:
+        findings = audit_inventory(inventory, self.signer, allowed_accounts=allowed_accounts)
+        out = [f.to_json() for f in findings]
+        for rec in out:
+            self._maybe_write("finding", rec)
+        return out
+
+    def audit_inventory(self, inventory: List[Dict[str, Any]], allowed_accounts: Optional[List[str]] = None) -> List[Dict[str, Any]]:
+        return self.audit(inventory, allowed_accounts=allowed_accounts)
+
+    def plant_canaries(self, inventory: List[Dict[str, Any]], live: bool = False) -> List[Dict[str, Any]]:
+        canaries = plant_canaries(inventory, self.signer, live=live)
+        out = [c.to_json() for c in canaries]
+        for rec in out:
+            self._maybe_write("canary", rec)
+        return out
+
+    def process_logs(self, logs: Union[List[str], List[Dict[str, Any]]]) -> List[Dict[str, Any]]:
+        alerts: List[Alert] = []
+        # If a list of dicts (records) is provided, parse directly
+        if isinstance(logs, list) and logs and isinstance(logs[0], dict):
+            for rec in logs:  # type: ignore[assignment]
+                a = _alert_from_record(rec, self.signer)
+                if a:
+                    alerts.append(a)
+        else:
+            paths = [str(p) for p in (logs or [])]  # type: ignore[arg-type]
+            alerts = process_logs(paths, self.signer)
+        out = [a.to_json() for a in alerts]
+        for rec in out:
+            self._maybe_write("alert", rec)
+        return out
+
+    def verify_signature(self, obj: Dict[str, Any], siginfo: Dict[str, str]) -> bool:
+        return self.signer.verify(obj, siginfo)
+
+
 def main():
     parser = argparse.ArgumentParser(
         prog="keytrace-guardian",
@@ -789,7 +817,6 @@ def main():
     args = parser.parse_args()
     signer = Signer()
 
-    # Evidence sink (optional)
     sink: Optional[EvidenceSinkBase] = None
     if not getattr(args, "dry_run", True):
         if not args.evidence or not args.evidence_kms:
@@ -806,7 +833,6 @@ def main():
             print(f"Error loading inventory: {e}", file=sys.stderr)
             sys.exit(1)
         findings = audit_inventory(inventory, signer)
-        # Output
         for f in findings:
             rec = f.to_json()
             if sink:
@@ -834,7 +860,6 @@ def main():
 
     if args.command == "process-logs":
         alerts = process_logs(args.logs, signer)
-        # Immediate signed alert output
         for a in alerts:
             rec = a.to_json()
             if sink:
@@ -845,7 +870,6 @@ def main():
 
 
 if __name__ == "__main__":
-    # Safety banner
     if not os.getenv("KEYTRACE_GUARDIAN_ACK"):
         print("Warning: Authorized use only. Default dry-run mode avoids evidence writes.", file=sys.stderr)
     main()
