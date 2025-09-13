@@ -1546,7 +1546,7 @@ security_tools:
   - On a clean repository, the tool emits a low-risk verdict, a signed CycloneDX SBOM,
     and a provenance attestation suitable for CI policy gates.
   ready: true
-  status: in_progress
+  status: needs_work
   area_allowlist:
   - tools/ai_security/gencode_risk_auditor.py
   - tests/test_ai_security_012.py
