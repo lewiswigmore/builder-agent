@@ -1490,7 +1490,7 @@ security_tools:
   - If an allowlisted enterprise MASQUE egress is used within policy, the system records
     the event but suppresses alerts while still sealing minimal evidence for audit.
   ready: true
-  status: todo
+  status: in_progress
   area_allowlist:
   - tools/network/masque_exfil_hunter.py
   - tests/test_net_004.py
