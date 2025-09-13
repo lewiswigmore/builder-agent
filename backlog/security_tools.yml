@@ -1462,7 +1462,7 @@ security_tools:
   - Canary Class 0 SMS in production are blocked (no user-visible disruption) and
     the event is logged with signed, forensically sound telemetry.
   ready: true
-  status: in_progress
+  status: needs_work
   area_allowlist:
   - tools/mobile/baseband_esim_auditor.py
   - tests/test_mobile_002.py
