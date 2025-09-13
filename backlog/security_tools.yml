@@ -1546,7 +1546,7 @@ security_tools:
   - On a clean repository, the tool emits a low-risk verdict, a signed CycloneDX SBOM,
     and a provenance attestation suitable for CI policy gates.
   ready: true
-  status: todo
+  status: needs_work
   area_allowlist:
   - tools/ai_security/gencode_risk_auditor.py
   - tests/test_ai_security_012.py
@@ -2357,4 +2357,85 @@ security_tools:
   area_allowlist:
   - tools/iot/ocpp_shield.py
   - tests/test_iot_010.py
+  max_changed_lines: 500
+- id: AI_SECURITY-019
+  title: 'TextWatermark Sentinel: LLM Output Watermark Verifier & Collusion-Resilience
+    Tester'
+  category: ai_security
+  description: Verifies presence and robustness of statistical/cryptographic text
+    watermarks in LLM outputs; orchestrates collusion/ensemble-remix and paraphrase/translation
+    attacks; measures detectability under transformations; emits signed, reproducible
+    attestations and policy gates.
+  security_requirements:
+  - "Operate on redacted or synthetic corpora; never persist raw PII or prompts\u2014\
+    store only salted hashes and bounded metrics."
+  - Support pluggable watermark schemes (greenlist/PRF-seeded, cryptographic) with
+    offline key custody and hardware-backed sealing.
+  - Sandbox attack generators (paraphrase/translation/noise) with strict egress allowlists;
+    log seeds/params for reproducibility.
+  acceptance_tests:
+  - "Detects configured watermark with \u226595% TPR and \u22641% FPR on a held-out\
+    \ corpus using a provided secret key and reports confidence intervals."
+  - "Demonstrates \u226530% degradation of detection under N=3 collusion remix and\
+    \ outputs a resilience score and recommended mitigations."
+  - Produces a signed attestation (Sigstore) including scheme ID, key fingerprint,
+    dataset hash, and parameter seeds; verification passes.
+  ready: true
+  status: todo
+  area_allowlist:
+  - tools/ai_security/textwatermark_sentinel.py
+  - tests/test_ai_security_019.py
+  max_changed_lines: 500
+- id: CLOUD-018
+  title: 'RoleTrust Sentinel: ExternalId & SessionPolicy Drift Auditor'
+  category: cloud
+  description: Continuously audits AWS/Azure/GCP third-party role trusts for ExternalId/audience/condition
+    misbinding and session policy bypass; deploys scoped honey roles and monitors
+    STS/OAuth usage to detect replay and overreach; provides remediation-as-code.
+  security_requirements:
+  - Read-only discovery by default; honey roles use minimal, isolated permissions
+    and auto-revoke on trigger with break-glass controls.
+  - Cryptographically sign detections and correlate with provider logs (CloudTrail,
+    Entra ID sign-in, Cloud Audit Logs) and time sources.
+  - OPA/Rego policy engine enforces gates on risky trust changes; integrates with
+    IaC (Terraform) for pre-merge diffs and rollbacks.
+  acceptance_tests:
+  - Flags an AWS IAM role trust missing sts:ExternalId, identifies at-risk principals,
+    and proposes least-privilege SessionPolicy remediation.
+  - Detects an unexpected audience in a GCP workforce identity pool provider and blocks
+    promotion via a failing policy gate.
+  - Honey role usage triggers an alert containing actor identity, source IP ASN, and
+    a signed evidence bundle anchored to Rekor.
+  ready: true
+  status: todo
+  area_allowlist:
+  - tools/cloud/roletrust_sentinel.py
+  - tests/test_cloud_018.py
+  max_changed_lines: 500
+- id: FORENSICS-009
+  title: 'WASM Runtime Forensic Collector: WASI/Edge Module Artifact Sealer'
+  category: forensics
+  description: 'Performs low-impact, live acquisition from server/edge WASM runtimes
+    (WASI, Wasmtime, WasmEdge): module binaries, import/export tables, paged linear
+    memory snapshots, runtime config, and host syscall traces via eBPF/ETW; seals
+    with timestamps and chain-of-custody.'
+  security_requirements:
+  - Snapshot windows and sampling rates are tunable with safe defaults and backpressure
+    detection to cap overhead.
+  - All artifacts are hashed, timestamped, and sealed with hardware-backed keys; supports
+    transparency log anchoring and replay-proofing.
+  - PII-safe redaction for memory dumps (configurable regex/structured scrubbing)
+    with keyed reversible hashing for courtroom verification.
+  acceptance_tests:
+  - Captures a running WASI module, emits module hash, export list, and a paged memory
+    snapshot under 5% CPU overhead on a sample workload.
+  - Correlates captured host syscalls with module function names and produces a signed,
+    immutable evidence bundle that validates successfully.
+  - Verifies chain-of-custody by re-hashing artifacts and validating transparency
+    log inclusion and timestamp continuity.
+  ready: true
+  status: todo
+  area_allowlist:
+  - tools/forensics/wasm_forensic_collector.py
+  - tests/test_forensics_009.py
   max_changed_lines: 500
