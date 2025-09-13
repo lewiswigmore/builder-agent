@@ -1462,7 +1462,7 @@ security_tools:
   - Canary Class 0 SMS in production are blocked (no user-visible disruption) and
     the event is logged with signed, forensically sound telemetry.
   ready: true
-  status: todo
+  status: needs_work
   area_allowlist:
   - tools/mobile/baseband_esim_auditor.py
   - tests/test_mobile_002.py
@@ -2275,3 +2275,86 @@ security_tools:
   - tools/zero_trust/microtrace_zt.py
   - tests/test_zt_001.py
   max_changed_lines: 700
+- id: AI_SECURITY-018
+  title: 'UnlearnGuard: Machine Unlearning Verifier & Privacy Regression Auditor'
+  category: ai_security
+  description: Verifies machine unlearning and data redaction claims by orchestrating
+    before/after evaluations (membership inference, gradient leakage, inversion probes),
+    dataset/model provenance checks, and reproducible, signed attestations that gate
+    promotions.
+  security_requirements:
+  - Operate on redacted or synthetic surrogates by default; require explicit opt-in
+    and masking for any PII-containing datasets.
+  - Verify model/dataset provenance with Sigstore/in-toto attestations and produce
+    signed, tamper-evident audit bundles.
+  - Constrain attack probes (rate/epsilon budgets) and isolate with sandboxed runners
+    and egress allowlists.
+  acceptance_tests:
+  - Given a baseline model and a post-unlearning model with a provided redaction set,
+    the tool reports a statistically significant drop in MI attack advantage for redacted
+    samples while preserving accuracy on non-redacted holdout.
+  - When provided with unsigned model artifacts, the tool fails the run with a provenance
+    error and emits a signed attestation indicating missing signatures.
+  - With egress blocked and sandbox enabled, inversion/gradient probes complete within
+    configured budgets and produce a signed, reproducible report with hashes of inputs/outputs.
+  ready: true
+  status: todo
+  area_allowlist:
+  - tools/ai_security/unlearnguard.py
+  - tests/test_ai_security_018.py
+  max_changed_lines: 500
+- id: CLOUD-017
+  title: 'ConfCompute Sentinel: TDX/SEV-SNP Attestation Drift & Escape Canary Auditor'
+  category: cloud
+  description: Continuously validates confidential VM integrity (TDX/SEV-SNP) by verifying
+    attestation quotes, measured boot logs, and vTPM state; deploys signed canary
+    workloads to detect hypervisor tampering and escape vectors, emitting policy-as-code
+    remediations.
+  security_requirements:
+  - Validate vendor attestation chains (DCAP/AMD ASK/ARK) and enforce freshness, nonce
+    binding, and PCR/TCB version thresholds.
+  - Run canary jobs with least privilege, sealed secrets, and egress allowlists; never
+    inject real customer data.
+  - Emit signed, immutable findings with external timestamping and support for automated
+    rollback/quarantine actions.
+  acceptance_tests:
+  - If attestation quotes are stale or nonce-mismatched, the tool blocks workload
+    promotion and outputs a signed failure with specific PCR/TCB deltas.
+  - When a policy requires SNP minimum TCB version V, launching an instance below
+    V triggers an automated quarantine and remediation suggestion.
+  - A canary workload detects injected debug MSR or hypercall tampering in a lab environment
+    and raises a high-severity alert with sealed evidence.
+  ready: true
+  status: todo
+  area_allowlist:
+  - tools/cloud/confcompute_sentinel.py
+  - tests/test_cloud_017.py
+  max_changed_lines: 500
+- id: IOT-010
+  title: 'OCPP Shield: EV Charger Protocol Abuse Auditor & Lab-Safe Fuzzer'
+  category: iot
+  description: Audits EV charging infrastructure (OCPP 1.6/2.0.1) for authentication,
+    firmware update, and transaction manipulation risks; profiles TLS/mTLS posture,
+    validates CSMS/charge point schema adherence, and performs stateful, rate-limited
+    fuzzing with court-ready evidence bundles.
+  security_requirements:
+  - Default to passive discovery and simulated lab mode; enforce strict rate limits
+    and safety interlocks before any active fuzzing.
+  - Require broker/CSMS credentials to be read-only audit scoped; verify cert chains,
+    pinning, and CRL/OCSP status.
+  - Cryptographically seal PCAPs, protocol transcripts, and firmware metadata; redact
+    customer identifiers prior to export.
+  acceptance_tests:
+  - Passive mode identifies plaintext OCPP over WebSocket and flags missing TLS/mTLS
+    with remediation guidance and certificate validation results.
+  - Firmware update flow simulation detects missing signature validation or rollback
+    protection and produces a sealed evidence bundle.
+  - Stateful fuzzing of Authorization and Transaction messages in lab mode triggers
+    expected error handling without disrupting adjacent devices, respecting configured
+    rate limits.
+  ready: true
+  status: todo
+  area_allowlist:
+  - tools/iot/ocpp_shield.py
+  - tests/test_iot_010.py
+  max_changed_lines: 500
