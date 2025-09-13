@@ -300,9 +300,7 @@ class BasebandEsimAuditor:
                 }
         else:
             # Production: no simulation; evaluate configuration only
-            device_flag = adapter.evaluate_class0_behavior()  # reused function doesn't include WAP; fallback to MDM
-            del device_flag  # unused
-            if mdm_requires_consent is False or mdm_wap_policy.get("disable_wap_push", False) is False:
+            if mdm_requires_consent is False:
                 finding = {
                     "id": "wap_push_no_user_consent",
                     "category": "WAP_Push",
