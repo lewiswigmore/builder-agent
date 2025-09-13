@@ -1518,7 +1518,7 @@ security_tools:
   - On buckets/containers where logs are intact and policy-compliant, the system produces
     a signed attestation proving continuity and immutability for the audited period.
   ready: true
-  status: in_progress
+  status: needs_work
   area_allowlist:
   - tools/cloud/auditlog_tamper_sentinel.py
   - tests/test_cloud_011.py
