@@ -15,6 +15,9 @@ ETHICAL_BANNER = (
     "Lab mode requires explicit consent to handle any synthetic payloads."
 )
 
+class RateLimitError(Exception):
+    pass
+
 def _now_iso() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
@@ -129,7 +132,7 @@ class DeviceAdapter:
     def simulate_wap_push(self, test_imsi: str, canary_payload: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         self._ensure_lab_allowed()
         if not self.rate_limiter.allow():
-            raise RuntimeError("Rate limit exceeded for radio simulation")
+            raise RateLimitError("Rate limit exceeded for radio simulation")
         # No real transmission; we only emulate device reaction based on device_info flags
         requires_consent = self.device_info.get("wap_push_requires_user_consent", True)
         accepted_without_consent = not requires_consent
@@ -146,7 +149,7 @@ class DeviceAdapter:
     def simulate_stk_command(self, test_imsi: str, command: str) -> Dict[str, Any]:
         self._ensure_lab_allowed()
         if not self.rate_limiter.allow():
-            raise RuntimeError("Rate limit exceeded for STK simulation")
+            raise RateLimitError("Rate limit exceeded for STK simulation")
         stk_restricted = self.device_info.get("restrict_stk_proactive", True)
         executed = not stk_restricted
         return {
@@ -665,6 +668,20 @@ def main(argv: List[str]) -> int:
             sys.stderr.write(f"Failed to write output: {e}\n")
             return 4
     return 0
+
+# Backwards/compatibility alias expected by tests
+BasebandESimAuditor = BasebandEsimAuditor
+
+__all__ = [
+    "RateLimitError",
+    "RateLimiter",
+    "EvidenceSealer",
+    "DeviceAdapter",
+    "BasebandEsimAuditor",
+    "BasebandESimAuditor",
+    "main",
+    "ETHICAL_BANNER",
+]
 
 if __name__ == "__main__":
     sys.exit(main(sys.argv[1:]))
