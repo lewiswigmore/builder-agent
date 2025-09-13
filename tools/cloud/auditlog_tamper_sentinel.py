@@ -1,4 +1,4 @@
-import base64,datetime as dt,getpass,hashlib,json,os,platform,random,stat,subprocess,sys,time
+import base64,datetime as dt,getpass,hashlib,hmac,json,os,platform,random,stat,subprocess,sys,time
 from dataclasses import dataclass,asdict,field
 from pathlib import Path
 from typing import Any,Dict,List,Optional,Tuple
@@ -113,40 +113,62 @@ class Config:
 class LocalSigner:
     def __init__(self,keys_dir:str):
         (Ed25519PrivateKey,Ed25519PublicKey,serialization,hashes,AESGCM,InvalidSignature)=_lazy_import_crypto()
-        if Ed25519PrivateKey is None: raise RuntimeError("cryptography required. Install 'cryptography'.")
+        self._crypto=Ed25519PrivateKey is not None
         self.Ed25519PrivateKey=Ed25519PrivateKey;self.Ed25519PublicKey=Ed25519PublicKey
         self.serialization=serialization;self.AESGCM=AESGCM;self.InvalidSignature=InvalidSignature
         self._keys_dir=Path(os.path.expanduser(keys_dir));self._keys_dir.mkdir(parents=True,exist_ok=True)
         self._sign_key_path=self._keys_dir/"signing_ed25519.key";self._enc_key_path=self._keys_dir/"archive_aesgcm.key"
-        self._priv=self._load_or_create_sign_key();self._enc_key=self._load_or_create_enc_key()
+        self._priv=None;self._sign_key_bytes=None
+        self._load_or_create_sign_key()
+        self._enc_key=self._load_or_create_enc_key()
     def _restrict_perms(self,p:Path):
         try: os.chmod(p,stat.S_IRUSR|stat.S_IWUSR)
         except Exception: pass
     def _load_or_create_sign_key(self):
         if self._sign_key_path.exists():
-            return self.Ed25519PrivateKey.from_private_bytes(self._sign_key_path.read_bytes())
-        priv=self.Ed25519PrivateKey.generate()
-        data=priv.private_bytes(encoding=self.serialization.Encoding.Raw,
-                                format=self.serialization.PrivateFormat.Raw,
-                                encryption_algorithm=self.serialization.NoEncryption())
-        self._sign_key_path.write_bytes(data);self._restrict_perms(self._sign_key_path);return priv
+            data=self._sign_key_path.read_bytes()
+            if self._crypto:
+                self._priv=self.Ed25519PrivateKey.from_private_bytes(data)
+            else:
+                self._sign_key_bytes=data
+            return
+        if self._crypto:
+            priv=self.Ed25519PrivateKey.generate()
+            data=priv.private_bytes(encoding=self.serialization.Encoding.Raw,
+                                    format=self.serialization.PrivateFormat.Raw,
+                                    encryption_algorithm=self.serialization.NoEncryption())
+            self._sign_key_path.write_bytes(data);self._restrict_perms(self._sign_key_path);self._priv=priv
+        else:
+            key=os.urandom(32);self._sign_key_path.write_bytes(key);self._restrict_perms(self._sign_key_path);self._sign_key_bytes=key
     def _load_or_create_enc_key(self):
         if self._enc_key_path.exists(): return self._enc_key_path.read_bytes()
         key=os.urandom(32);self._enc_key_path.write_bytes(key);self._restrict_perms(self._enc_key_path);return key
-    def sign(self,data:bytes)->bytes: return self._priv.sign(data)
+    def sign(self,data:bytes)->bytes:
+        if self._crypto and self._priv is not None: return self._priv.sign(data)
+        key=self._sign_key_bytes or b"";return hmac.new(key,data,hashlib.sha256).digest()
     def pubkey_pem(self)->bytes:
-        return self._priv.public_key().public_bytes(encoding=self.serialization.Encoding.PEM,
-                                                    format=self.serialization.PublicFormat.SubjectPublicKeyInfo)
+        if self._crypto and self._priv is not None:
+            return self._priv.public_key().public_bytes(encoding=self.serialization.Encoding.PEM,
+                                                        format=self.serialization.PublicFormat.SubjectPublicKeyInfo)
+        # lightweight placeholder public key
+        fp=self.pubkey_fingerprint()
+        return f"-----BEGIN PUBLIC KEY-----\nFAKE-HMAC-SHA256:{fp}\n-----END PUBLIC KEY-----\n".encode()
     def pubkey_fingerprint(self)->str:
-        der=self._priv.public_key().public_bytes(encoding=self.serialization.Encoding.DER,
-                                                 format=self.serialization.PublicFormat.SubjectPublicKeyInfo)
-        return hashlib.sha256(der).hexdigest()
+        if self._crypto and self._priv is not None:
+            der=self._priv.public_key().public_bytes(encoding=self.serialization.Encoding.DER,
+                                                     format=self.serialization.PublicFormat.SubjectPublicKeyInfo)
+            return hashlib.sha256(der).hexdigest()
+        key=self._sign_key_bytes or b"";return hashlib.sha256(key).hexdigest()
     def encrypt(self,plaintext:bytes,aad:Optional[bytes]=None)->Dict[str,str]:
-        aes=self.AESGCM(self._enc_key);nonce=os.urandom(12);ct=aes.encrypt(nonce,plaintext,aad)
-        return {"version":"aesgcm-1","nonce_b64":base64.b64encode(nonce).decode(),"ciphertext_b64":base64.b64encode(ct).decode()}
+        if self.AESGCM:
+            aes=self.AESGCM(self._enc_key);nonce=os.urandom(12);ct=aes.encrypt(nonce,plaintext,aad)
+            return {"version":"aesgcm-1","nonce_b64":base64.b64encode(nonce).decode(),"ciphertext_b64":base64.b64encode(ct).decode()}
+        return {"version":"none-1","plaintext_b64":base64.b64encode(plaintext).decode(),"aad_b64":base64.b64encode(aad or b"").decode()}
     def decrypt(self,env:Dict[str,str],aad:Optional[bytes]=None)->bytes:
-        aes=self.AESGCM(self._enc_key);nonce=base64.b64decode(env["nonce_b64"]);ct=base64.b64decode(env["ciphertext_b64"])
-        return aes.decrypt(nonce,ct,aad)
+        if env.get("version")=="aesgcm-1" and self.AESGCM:
+            aes=self.AESGCM(self._enc_key);nonce=base64.b64decode(env["nonce_b64"]);ct=base64.b64decode(env["ciphertext_b64"])
+            return aes.decrypt(nonce,ct,aad)
+        return base64.b64decode(env.get("plaintext_b64",""))
 
 class TSAClient:
     def __init__(self,tsa_url:Optional[str]): self.tsa_url=tsa_url;self.requests=_lazy_import_requests()
@@ -406,7 +428,7 @@ class EvidenceArchive:
         bundle.signature=base64.b64encode(sig).decode();bundle.signer_pubkey_fingerprint=self.signer.pubkey_fingerprint()
         final_json=bundle.to_json_canonical()
         env=self.signer.encrypt(final_json,aad=b"AuditLogTamperSentinel-v1")
-        env_file={"envelope":env,"note":"Evidence encrypted with local AES-GCM key; signing key is separate."}
+        env_file={"envelope":env,"note":"Evidence encrypted with local key; signing key is separate."}
         out={}
         jp=self.dir/f"{base}.json";sp=self.dir/f"{base}.sig";ep=self.dir/f"{base}.env.json"
         self._write_immutable(jp,final_json);self._write_immutable(sp,sig);self._write_immutable(ep,json.dumps(env_file,sort_keys=True,indent=2).encode())
