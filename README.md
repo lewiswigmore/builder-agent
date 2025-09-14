@@ -1,6 +1,7 @@
 # Security Tool Builder
 
 [![Continuous Security Tool Builder](https://github.com/lewiswigmore/builder-agent/actions/workflows/daily-agent.yml/badge.svg)](https://github.com/lewiswigmore/builder-agent/actions/workflows/daily-agent.yml)
+[![GitHub Pages](https://img.shields.io/badge/🌐_Browse_Tools-GitHub_Pages-blue?style=flat&logo=github)](https://lewiswigmore.github.io/builder-agent)
 
 An experiment in using AI to generate random security scripts and proof-of-concepts. The system creates small tools in separate branches that you can review and potentially develop further if they're useful.
 
