@@ -1573,7 +1573,7 @@ security_tools:
   - Generate an attestation bundle containing leakage score, environment hashes, and
     signed provenance; signature verification succeeds with the configured trust root.
   ready: true
-  status: in_progress
+  status: needs_work
   area_allowlist:
   - tools/ai_security/sidechannel_guard.py
   - tests/test_ai_security_013.py
