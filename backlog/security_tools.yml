@@ -1600,7 +1600,7 @@ security_tools:
   - Trigger a honey webhook from an untrusted origin; tool rotates the secret, blocks
     the source, and opens a tracked incident with signed evidence.
   ready: true
-  status: todo
+  status: in_progress
   area_allowlist:
   - tools/cloud/webhookshield.py
   - tests/test_cloud_012.py
