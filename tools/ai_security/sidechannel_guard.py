@@ -44,9 +44,10 @@ __all__ = [
     "LeakPolicy",
     "AttestationSigner",
     "LeakageType",
+    "ConsentRequiredError",
 ]
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"
 
 # Optional imports for enhanced features
 try:
@@ -92,6 +93,11 @@ class LeakageAlert(Exception):
 
     def __str__(self) -> str:
         return f"{self.code}: {super().__str__()}"
+
+
+class ConsentRequiredError(PermissionError):
+    """Raised when enhanced perf/eBPF-like collection is requested without explicit consent."""
+    pass
 
 
 class LeakageType(str, Enum):
@@ -216,11 +222,11 @@ class TelemetryStore:
         ks = (stream * ((len(plaintext) // len(stream)) + 1))[: len(plaintext)]
         ct = bytes([a ^ b for a, b in zip(plaintext, ks)])
         return {
-            "mode": "XOR-BLAKE2b",
-            "nonce": base64.b64encode(nonce).decode("ascii"),
-            "ct": base64.b64encode(ct).decode("ascii"),
-            "insecure": True,
-        }
+                "mode": "XOR-BLAKE2b",
+                "nonce": base64.b64encode(nonce).decode("ascii"),
+                "ct": base64.b64encode(ct).decode("ascii"),
+                "insecure": True,
+            }
 
     def write_encrypted_json(self, rel_name: str, obj: Dict[str, Any]) -> str:
         payload = _canonical_json(obj)
@@ -460,6 +466,11 @@ class SideChannelGuard:
                         It must not mutate global state in a way that breaks reproducibility.
         """
         cfg = config or ProfilingConfig()
+
+        # Enforce explicit user consent for enhanced perf counters
+        if cfg.enable_perf_counters and not cfg.user_consent:
+            raise ConsentRequiredError("Enhanced perf/eBPF-like counters require explicit user consent. Set user_consent=True to proceed.")
+
         rng = random.Random(cfg.seed)
 
         device = cfg.device
