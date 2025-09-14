@@ -1628,7 +1628,7 @@ security_tools:
   - Attempt active transmission without lab mode configuration; tool refuses to transmit
     and records a LAB_MODE_REQUIRED safety error.
   ready: true
-  status: todo
+  status: in_progress
   area_allowlist:
   - tools/iot/lpwan_guard.py
   - tests/test_iot_006.py
