@@ -102,6 +102,17 @@ class Config:
     timestamping_secret: Optional[str] = None  # used to HMAC-seal bundles
 
 
+class LPWANGuardError(Exception):
+    pass
+
+
+class SafetyError(LPWANGuardError):
+    """
+    Raised for safety-related violations such as attempting active operations without lab mode.
+    """
+    pass
+
+
 class EvidenceSealer:
     def __init__(self, timestamping_secret: Optional[str] = None):
         self.items: List[Dict[str, Any]] = []
@@ -147,10 +158,6 @@ class EvidenceSealer:
             },
             "disclaimer": "Sealed bundle for authorized security auditing. Contains minimal, privacy-preserving evidence."
         }
-
-
-class LPWANGuardError(Exception):
-    pass
 
 
 class LPWANGuard:
@@ -467,7 +474,7 @@ class LPWANGuard:
                     "tx_power_dbm": self.config.tx_power_dbm
                 }
             )
-            raise LPWANGuardError("LAB_MODE_REQUIRED")
+            raise SafetyError("LAB_MODE_REQUIRED")
 
     # Reporting
     def generate_report(self) -> Dict[str, Any]:
