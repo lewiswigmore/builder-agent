@@ -1628,7 +1628,7 @@ security_tools:
   - Attempt active transmission without lab mode configuration; tool refuses to transmit
     and records a LAB_MODE_REQUIRED safety error.
   ready: true
-  status: todo
+  status: needs_work
   area_allowlist:
   - tools/iot/lpwan_guard.py
   - tests/test_iot_006.py
@@ -2438,4 +2438,87 @@ security_tools:
   area_allowlist:
   - tools/forensics/wasm_forensic_collector.py
   - tests/test_forensics_009.py
+  max_changed_lines: 500
+- id: AI_SECURITY-020
+  title: 'FederatedEdge PoisonGuard: FL Round Integrity & Sybil Auditor'
+  category: ai_security
+  description: Audits federated learning pipelines for poisoning/backdoors, sybil
+    collusion, and privacy drift. Instruments client/server to verify secure aggregation
+    and DP guarantees, validates device/TEE attestations, seeds signed canary rounds,
+    and quarantines suspect clients with signed, reproducible attestations.
+  security_requirements:
+  - Collect only blinded gradients/metrics and aggregate statistics; never ingest
+    raw private training data or PII.
+  - Verify client/device integrity via hardware/TEE attestation (e.g., Android Keystore/iOS
+    Secure Enclave/TrustZone) and secure-aggregation proofs before accepting updates.
+  - Produce tamper-evident, signed audit logs and round attestations anchored to transparency/timestamping
+    services; support full reproducibility.
+  acceptance_tests:
+  - Inject a single backdoored client update during a round; tool flags outlier via
+    spectral signatures/activation clustering, quarantines the client, and halts the
+    round with a signed incident bundle.
+  - Run a calibration where DP epsilon/bounds are misconfigured; tool detects noise
+    below policy threshold and blocks promotion with a failing attestation.
+  - Submit client updates lacking valid TEE attestation or using revoked keys; tool
+    rejects updates and emits a signed compliance failure report.
+  ready: true
+  status: todo
+  area_allowlist:
+  - tools/ai_security/federatededge_poison_guard.py
+  - tests/test_ai_security_020.py
+  max_changed_lines: 500
+- id: CLOUD-019
+  title: 'EphemKey Sentinel: Ephemeral Credential & Presigned URL Abuse Auditor'
+  category: cloud
+  description: Continuously audits ephemeral credentials and presigned URL usage across
+    AWS/Azure/GCP. Enforces TTL, scope, and IP conditions; seeds signed canary URLs/tokens;
+    detects replay/misuse via cross-cloud log correlation; auto-revokes abused tokens
+    and recommends least-privilege remediations with signed evidence.
+  security_requirements:
+  - Operate read-only by default; canary generation and revocation actions use least-privilege,
+    scoped roles and are isolated from production data.
+  - All canary artifacts are cryptographically signed, namespaced, and auto-expiring;
+    never contain sensitive content.
+  - Correlate control/data-plane logs with synchronized time sources; store evidence
+    immutably with integrity proofs.
+  acceptance_tests:
+  - Create a canary presigned URL with 5-minute TTL; accessing it after expiry or
+    from a disallowed IP triggers an alert and auto-revocation, producing a signed
+    incident bundle.
+  - Scan IAM/OAuth configurations to detect role sessions exceeding organization policy;
+    tool flags accounts permitting >1h sessions and emits remediation-as-code.
+  - Identify a presigned URL missing content-type constraints enabling smuggling;
+    tool flags the issue and suggests SDK configuration fixes.
+  ready: true
+  status: todo
+  area_allowlist:
+  - tools/cloud/ephemkey_sentinel.py
+  - tests/test_cloud_019.py
+  max_changed_lines: 500
+- id: IOT-011
+  title: 'UAVLink Shield: Drone Command & Telemetry Security Auditor'
+  category: iot
+  description: Passive-first IDS and lab-safe fuzzer for UAV control links (MAVLink
+    v1/v2, proprietary telemetry). Profiles signing/encryption posture, command sequencing/rate
+    anomalies, and geofence/RTL bypass attempts; extracts flight-controller firmware
+    SBOMs (PX4/ArduPilot), correlates CVEs, and emits signed evidence bundles.
+  security_requirements:
+  - Production mode is passive only; active fuzzing restricted to isolated labs with
+    hardware-in-the-loop and enforced safety interlocks.
+  - Never arm motors or change flight modes during tests; automatically revert to
+    listen-only on critical failsafe or error telemetry.
+  - Evidence bundles include PCAPs, command transcripts, firmware hashes/SBOMs, and
+    timestamps with cryptographic sealing.
+  acceptance_tests:
+  - Detect unsigned MAVLink v1 traffic on a live link; tool recommends enabling MAVLink2
+    signing and generates an alert with endpoint fingerprints and posture assessment.
+  - In lab mode, perform rate-limited fuzz of MAV_CMD parameter boundaries; tool confirms
+    safety interlocks prevent arming and reverts to passive upon critical error codes.
+  - Extract SBOM from a PX4 firmware image, correlate with NVD, and flag a known vulnerable
+    component with remediation guidance and signed report.
+  ready: true
+  status: todo
+  area_allowlist:
+  - tools/iot/uavlink_shield.py
+  - tests/test_iot_011.py
   max_changed_lines: 500
