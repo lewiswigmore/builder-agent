@@ -6,6 +6,8 @@ baseurl: "/builder-agent"
 
 # Build settings
 markdown: kramdown
+
+# GitHub Pages gem
 plugins:
   - jekyll-feed
 
@@ -28,7 +30,3 @@ exclude:
   - "*.py"
   - "*.yml"
   - "*.yaml"
-
-# Include files
-include:
-  - docs/
