@@ -35,6 +35,7 @@ import statistics
 import sys
 import time
 from dataclasses import dataclass
+from enum import Enum
 from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple, Union
 
 __all__ = [
@@ -42,6 +43,7 @@ __all__ = [
     "LeakageAlert",
     "LeakPolicy",
     "AttestationSigner",
+    "LeakageType",
 ]
 
 __version__ = "0.1.0"
@@ -90,6 +92,13 @@ class LeakageAlert(Exception):
 
     def __str__(self) -> str:
         return f"{self.code}: {super().__str__()}"
+
+
+class LeakageType(str, Enum):
+    """Leakage categories for alerts and policy handling."""
+    TIMING = "LEAKAGE_TIMING"
+    CACHE = "LEAKAGE_CACHE"
+    PERF = "LEAKAGE_PERF"
 
 
 @dataclass
@@ -415,9 +424,6 @@ class SideChannelGuard:
         Wrap a model callable to enforce constant-time by padding up to the calibrated max time.
         Calibration runs the model a few times to find a safe time budget.
         """
-        device = None
-        if _torch is not None and isinstance(sample_input, _torch.Tensor):
-            device = "cuda" if (hasattr(sample_input, "is_cuda") and sample_input.is_cuda) else "cpu"
         # Calibrate
         times: List[int] = []
         for _ in range(max(1, calibrate_runs)):
@@ -437,7 +443,6 @@ class SideChannelGuard:
             elapsed = time.perf_counter_ns() - start
             # Busy-wait pad
             while elapsed < budget_ns:
-                # spin a little
                 elapsed = time.perf_counter_ns() - start
             return out
 
@@ -576,7 +581,7 @@ class SideChannelGuard:
         leakage_score = float(effect_size)
         alert_code: Optional[str] = None
         if leakage_score >= self.policy.timing_effect_threshold:
-            alert_code = "LEAKAGE_TIMING"
+            alert_code = LeakageType.TIMING.value
 
         result: Dict[str, Any] = {
             "leakage_score": leakage_score,
