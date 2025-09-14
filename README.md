@@ -4,6 +4,8 @@
 
 An experiment in using AI to generate random security scripts and proof-of-concepts. The system creates small tools in separate branches that you can review and potentially develop further if they're useful.
 
+🌐 **[Browse Tools Online](https://lewiswigmore.github.io/builder-agent)** - Interactive web interface to explore all generated security tools
+
 > **Badge Status**: Shows ✅ when the agent successfully generates and pushes new tools for review. Generated tools may need manual refinement, which is expected for experimental AI-generated code.
 
 ## What It Does

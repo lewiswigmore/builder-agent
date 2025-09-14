@@ -1,0 +1,495 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Security Tool Builder - AI-Generated Security Tools</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/alpinejs@3.x.x/dist/cdn.min.js" defer></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/js-yaml/4.1.0/js-yaml.min.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        'cyber-blue': '#00f5ff',
+                        'cyber-purple': '#8b5cf6',
+                        'cyber-green': '#10b981',
+                        'dark-bg': '#0f172a',
+                        'dark-card': '#1e293b',
+                        'dark-border': '#334155'
+                    }
+                }
+            }
+        }
+    </script>
+</head>
+<body class="bg-dark-bg text-white min-h-screen" x-data="securityTools()">
+    <!-- Header -->
+    <header class="bg-dark-card border-b border-dark-border">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+            <div class="flex justify-between items-center py-6">
+                <div class="flex items-center space-x-4">
+                    <div class="h-10 w-10 bg-gradient-to-r from-cyber-blue to-cyber-purple rounded-lg flex items-center justify-center">
+                        <i class="fas fa-shield-alt text-white"></i>
+                    </div>
+                    <div>
+                        <h1 class="text-2xl font-bold text-white">Security Tool Builder</h1>
+                        <p class="text-gray-400">AI-Generated Cybersecurity Tools</p>
+                    </div>
+                </div>
+                <div class="flex items-center space-x-4">
+                    <a href="https://github.com/lewiswigmore/builder-agent" 
+                       class="bg-gray-800 hover:bg-gray-700 px-4 py-2 rounded-lg flex items-center space-x-2 transition-colors">
+                        <i class="fab fa-github"></i>
+                        <span>GitHub</span>
+                    </a>
+                    <button @click="loadData()" 
+                            class="bg-cyber-blue hover:bg-blue-400 text-black px-4 py-2 rounded-lg flex items-center space-x-2 transition-colors">
+                        <i class="fas fa-sync-alt" :class="{ 'animate-spin': loading }"></i>
+                        <span>Refresh</span>
+                    </button>
+                </div>
+            </div>
+        </div>
+    </header>
+
+    <!-- Stats Bar -->
+    <div class="bg-dark-card border-b border-dark-border">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4">
+            <div class="grid grid-cols-2 md:grid-cols-5 gap-4">
+                <div class="text-center">
+                    <div class="text-2xl font-bold text-cyber-blue" x-text="stats.total"></div>
+                    <div class="text-sm text-gray-400">Total Tools</div>
+                </div>
+                <div class="text-center">
+                    <div class="text-2xl font-bold text-green-400" x-text="stats.completed"></div>
+                    <div class="text-sm text-gray-400">Completed</div>
+                </div>
+                <div class="text-center">
+                    <div class="text-2xl font-bold text-yellow-400" x-text="stats.todo"></div>
+                    <div class="text-sm text-gray-400">Todo</div>
+                </div>
+                <div class="text-center">
+                    <div class="text-2xl font-bold text-orange-400" x-text="stats.needs_work"></div>
+                    <div class="text-sm text-gray-400">Needs Work</div>
+                </div>
+                <div class="text-center">
+                    <div class="text-2xl font-bold text-purple-400" x-text="stats.review"></div>
+                    <div class="text-sm text-gray-400">Ready for Review</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Controls -->
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
+        <div class="flex flex-col md:flex-row gap-4 mb-6">
+            <!-- Search -->
+            <div class="flex-1">
+                <div class="relative">
+                    <input type="text" 
+                           x-model="searchTerm"
+                           placeholder="Search tools..."
+                           class="w-full pl-10 pr-4 py-2 bg-dark-card border border-dark-border rounded-lg text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-cyber-blue">
+                    <i class="fas fa-search absolute left-3 top-3 text-gray-400"></i>
+                </div>
+            </div>
+            
+            <!-- Category Filter -->
+            <select x-model="selectedCategory" 
+                    class="bg-dark-card border border-dark-border rounded-lg px-4 py-2 text-white focus:outline-none focus:ring-2 focus:ring-cyber-blue">
+                <option value="">All Categories</option>
+                <template x-for="category in categories" :key="category">
+                    <option :value="category" x-text="category"></option>
+                </template>
+            </select>
+            
+            <!-- Status Filter -->
+            <select x-model="selectedStatus" 
+                    class="bg-dark-card border border-dark-border rounded-lg px-4 py-2 text-white focus:outline-none focus:ring-2 focus:ring-cyber-blue">
+                <option value="">All Statuses</option>
+                <option value="completed">Completed</option>
+                <option value="ready_for_review">Ready for Review</option>
+                <option value="todo">Todo</option>
+                <option value="needs_work">Needs Work</option>
+                <option value="in_progress">In Progress</option>
+            </select>
+        </div>
+
+        <!-- Loading State -->
+        <div x-show="loading" class="text-center py-12">
+            <i class="fas fa-spinner fa-spin text-4xl text-cyber-blue mb-4"></i>
+            <p class="text-gray-400">Loading security tools...</p>
+        </div>
+
+        <!-- Error State -->
+        <div x-show="error" class="bg-red-900/50 border border-red-500 rounded-lg p-4 mb-6">
+            <div class="flex items-center space-x-2">
+                <i class="fas fa-exclamation-triangle text-red-400"></i>
+                <span class="text-red-200">Failed to load tools. Using demo data.</span>
+            </div>
+        </div>
+
+        <!-- Tools Grid -->
+        <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+            <template x-for="tool in filteredTools" :key="tool.id">
+                <div class="bg-dark-card border border-dark-border rounded-lg p-6 hover:border-cyber-blue transition-colors">
+                    <!-- Tool Header -->
+                    <div class="flex items-start justify-between mb-4">
+                        <div class="flex-1">
+                            <h3 class="text-lg font-semibold text-white mb-1" x-text="tool.title"></h3>
+                            <div class="flex items-center space-x-2 mb-2">
+                                <span class="text-xs px-2 py-1 rounded-full bg-gray-700 text-gray-300" x-text="tool.id"></span>
+                                <span class="text-xs px-2 py-1 rounded-full" 
+                                      :class="getCategoryColor(tool.category)"
+                                      x-text="tool.category"></span>
+                            </div>
+                        </div>
+                        <div class="flex items-center space-x-2">
+                            <span class="px-2 py-1 text-xs rounded-full"
+                                  :class="getStatusColor(tool.status)"
+                                  x-text="tool.status.replace('_', ' ')"></span>
+                        </div>
+                    </div>
+
+                    <!-- Description -->
+                    <p class="text-gray-300 text-sm mb-4 line-clamp-3" x-text="tool.description"></p>
+
+                    <!-- Requirements Preview -->
+                    <div class="mb-4" x-show="tool.security_requirements && tool.security_requirements.length > 0">
+                        <h4 class="text-sm font-medium text-gray-400 mb-2">Security Requirements</h4>
+                        <ul class="text-xs text-gray-500 space-y-1">
+                            <template x-for="req in tool.security_requirements.slice(0, 2)" :key="req">
+                                <li class="flex items-start space-x-2">
+                                    <i class="fas fa-check text-green-400 mt-0.5 text-xs"></i>
+                                    <span x-text="req"></span>
+                                </li>
+                            </template>
+                            <li x-show="tool.security_requirements.length > 2" class="text-gray-600">
+                                <span x-text="`+ ${tool.security_requirements.length - 2} more...`"></span>
+                            </li>
+                        </ul>
+                    </div>
+
+                    <!-- Actions -->
+                    <div class="flex items-center justify-between pt-4 border-t border-dark-border">
+                        <button @click="selectedTool = tool; showModal = true"
+                                class="text-cyber-blue hover:text-blue-300 text-sm font-medium">
+                            View Details
+                        </button>
+                        <div class="flex items-center space-x-2">
+                            <a x-show="tool.status !== 'todo'" 
+                               :href="`https://github.com/lewiswigmore/builder-agent/tree/security-tool/${tool.id.toLowerCase()}`"
+                               target="_blank"
+                               class="text-gray-400 hover:text-white text-sm">
+                                <i class="fab fa-github"></i>
+                            </a>
+                            <span x-show="tool.ready" class="text-green-400 text-sm">
+                                <i class="fas fa-play"></i>
+                            </span>
+                        </div>
+                    </div>
+                </div>
+            </template>
+        </div>
+
+        <!-- Empty State -->
+        <div x-show="filteredTools.length === 0 && !loading" class="text-center py-12">
+            <i class="fas fa-search text-4xl text-gray-600 mb-4"></i>
+            <p class="text-gray-400">No tools found matching your criteria.</p>
+        </div>
+    </div>
+
+    <!-- Modal -->
+    <div x-show="showModal" 
+         x-transition:enter="transition ease-out duration-300"
+         x-transition:enter-start="opacity-0"
+         x-transition:enter-end="opacity-100"
+         x-transition:leave="transition ease-in duration-200"
+         x-transition:leave-start="opacity-100"
+         x-transition:leave-end="opacity-0"
+         class="fixed inset-0 bg-black bg-opacity-50 z-50 flex items-center justify-center p-4"
+         @click="showModal = false">
+        
+        <div class="bg-dark-card border border-dark-border rounded-lg max-w-4xl w-full max-h-[90vh] overflow-y-auto"
+             @click.stop>
+            <div class="p-6">
+                <!-- Modal Header -->
+                <div class="flex items-start justify-between mb-6">
+                    <div>
+                        <h2 class="text-2xl font-bold text-white mb-2" x-text="selectedTool?.title"></h2>
+                        <div class="flex items-center space-x-2">
+                            <span class="text-sm px-2 py-1 rounded-full bg-gray-700 text-gray-300" x-text="selectedTool?.id"></span>
+                            <span class="text-sm px-2 py-1 rounded-full" 
+                                  :class="getCategoryColor(selectedTool?.category)"
+                                  x-text="selectedTool?.category"></span>
+                            <span class="px-2 py-1 text-sm rounded-full"
+                                  :class="getStatusColor(selectedTool?.status)"
+                                  x-text="selectedTool?.status?.replace('_', ' ')"></span>
+                        </div>
+                    </div>
+                    <button @click="showModal = false" 
+                            class="text-gray-400 hover:text-white">
+                        <i class="fas fa-times text-xl"></i>
+                    </button>
+                </div>
+
+                <!-- Description -->
+                <div class="mb-6">
+                    <h3 class="text-lg font-semibold text-white mb-3">Description</h3>
+                    <p class="text-gray-300" x-text="selectedTool?.description"></p>
+                </div>
+
+                <!-- Security Requirements -->
+                <div class="mb-6" x-show="selectedTool?.security_requirements?.length > 0">
+                    <h3 class="text-lg font-semibold text-white mb-3">Security Requirements</h3>
+                    <ul class="space-y-2">
+                        <template x-for="req in selectedTool?.security_requirements" :key="req">
+                            <li class="flex items-start space-x-3">
+                                <i class="fas fa-shield-alt text-cyber-blue mt-1"></i>
+                                <span class="text-gray-300" x-text="req"></span>
+                            </li>
+                        </template>
+                    </ul>
+                </div>
+
+                <!-- Acceptance Tests -->
+                <div class="mb-6" x-show="selectedTool?.acceptance_tests?.length > 0">
+                    <h3 class="text-lg font-semibold text-white mb-3">Acceptance Tests</h3>
+                    <ul class="space-y-2">
+                        <template x-for="test in selectedTool?.acceptance_tests" :key="test">
+                            <li class="flex items-start space-x-3">
+                                <i class="fas fa-check-circle text-green-400 mt-1"></i>
+                                <span class="text-gray-300" x-text="test"></span>
+                            </li>
+                        </template>
+                    </ul>
+                </div>
+
+                <!-- Files -->
+                <div class="mb-6" x-show="selectedTool?.area_allowlist?.length > 0">
+                    <h3 class="text-lg font-semibold text-white mb-3">Generated Files</h3>
+                    <ul class="space-y-1">
+                        <template x-for="file in selectedTool?.area_allowlist" :key="file">
+                            <li class="text-sm text-gray-400 font-mono" x-text="file"></li>
+                        </template>
+                    </ul>
+                </div>
+
+                <!-- Actions -->
+                <div class="flex items-center space-x-4 pt-6 border-t border-dark-border">
+                    <a x-show="selectedTool?.status !== 'todo'"
+                       :href="`https://github.com/lewiswigmore/builder-agent/tree/security-tool/${selectedTool?.id?.toLowerCase()}`"
+                       target="_blank"
+                       class="bg-cyber-blue hover:bg-blue-400 text-black px-4 py-2 rounded-lg flex items-center space-x-2 transition-colors">
+                        <i class="fab fa-github"></i>
+                        <span>View on GitHub</span>
+                    </a>
+                    <button @click="showModal = false"
+                            class="bg-gray-700 hover:bg-gray-600 text-white px-4 py-2 rounded-lg transition-colors">
+                        Close
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Footer -->
+    <footer class="bg-dark-card border-t border-dark-border mt-12">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+            <div class="text-center text-gray-400">
+                <p>AI-powered security tool generation • Experimental Research Project</p>
+                <p class="mt-2">Built with curiosity</p>
+            </div>
+        </div>
+    </footer>
+
+    <script>
+        function securityTools() {
+            return {
+                tools: [],
+                filteredTools: [],
+                categories: [],
+                searchTerm: '',
+                selectedCategory: '',
+                selectedStatus: '',
+                selectedTool: null,
+                showModal: false,
+                loading: false,
+                error: false,
+                stats: {
+                    total: 0,
+                    completed: 0,
+                    todo: 0,
+                    needs_work: 0,
+                    review: 0
+                },
+
+                init() {
+                    this.loadData();
+                    this.$watch('searchTerm', () => this.filterTools());
+                    this.$watch('selectedCategory', () => this.filterTools());
+                    this.$watch('selectedStatus', () => this.filterTools());
+                },
+
+                async loadData() {
+                    this.loading = true;
+                    this.error = false;
+                    
+                    try {
+                        // Try to load real data from GitHub
+                        const response = await fetch('https://raw.githubusercontent.com/lewiswigmore/builder-agent/main/backlog/security_tools.yml');
+                        if (response.ok) {
+                            const yamlText = await response.text();
+                            const data = jsyaml.load(yamlText);
+                            this.tools = data.security_tools || [];
+                        } else {
+                            throw new Error('Failed to fetch');
+                        }
+                    } catch (error) {
+                        console.warn('Failed to load real data, using demo data');
+                        this.error = true;
+                        this.loadDemoData();
+                    }
+                    
+                    this.processData();
+                    this.loading = false;
+                },
+
+                loadDemoData() {
+                    // Demo data for when we can't load the real YAML
+                    this.tools = [
+                        {
+                            id: "RECON-001",
+                            title: "Advanced Port Scanner",
+                            category: "reconnaissance",
+                            description: "Multi-threaded port scanner with service detection, banner grabbing, and vulnerability hints",
+                            status: "ready_for_review",
+                            ready: true,
+                            security_requirements: [
+                                "TCP and UDP port scanning capabilities",
+                                "Service version detection and banner grabbing",
+                                "Rate limiting to avoid detection"
+                            ],
+                            acceptance_tests: [
+                                "Scan common ports (1-1000) on localhost successfully",
+                                "Detect SSH service on port 22 with banner",
+                                "Export results to JSON format"
+                            ],
+                            area_allowlist: ["tools/recon/port_scanner.py", "tests/test_recon_001.py"]
+                        },
+                        {
+                            id: "AI-001",
+                            title: "Adversarial Canary",
+                            category: "ai_security",
+                            description: "Automated adversarial attack and poisoning simulator for ML models",
+                            status: "completed",
+                            ready: true,
+                            security_requirements: [
+                                "Execute attacks in sandboxed environments",
+                                "Generate reproducible attack results",
+                                "Support multiple ML frameworks"
+                            ],
+                            acceptance_tests: [
+                                "Generate adversarial examples for image classifiers",
+                                "Detect backdoor triggers in datasets",
+                                "Produce signed attestations"
+                            ],
+                            area_allowlist: ["tools/ai_security/adversarial_canary.py", "tests/test_ai_001.py"]
+                        },
+                        {
+                            id: "CLOUD-001",
+                            title: "Cloud IAM Drift Hunter",
+                            category: "cloud",
+                            description: "Detects IAM policy drift and privilege escalation paths across cloud providers",
+                            status: "needs_work",
+                            ready: true,
+                            security_requirements: [
+                                "Cross-cloud identity analysis",
+                                "Attack path mapping",
+                                "Read-only permissions"
+                            ],
+                            acceptance_tests: [
+                                "Identify privilege escalation paths",
+                                "Detect policy drift from baseline",
+                                "Generate remediation recommendations"
+                            ],
+                            area_allowlist: ["tools/cloud/iam_drift_hunter.py", "tests/test_cloud_001.py"]
+                        }
+                    ];
+                },
+
+                processData() {
+                    // Extract unique categories
+                    this.categories = [...new Set(this.tools.map(tool => tool.category))].sort();
+                    
+                    // Calculate stats
+                    this.stats.total = this.tools.length;
+                    this.stats.completed = this.tools.filter(t => t.status === 'completed').length;
+                    this.stats.todo = this.tools.filter(t => t.status === 'todo').length;
+                    this.stats.needs_work = this.tools.filter(t => t.status === 'needs_work').length;
+                    this.stats.review = this.tools.filter(t => t.status === 'ready_for_review').length;
+                    
+                    this.filterTools();
+                },
+
+                filterTools() {
+                    let filtered = this.tools;
+
+                    // Filter by search term
+                    if (this.searchTerm) {
+                        const term = this.searchTerm.toLowerCase();
+                        filtered = filtered.filter(tool => 
+                            tool.title.toLowerCase().includes(term) ||
+                            tool.description.toLowerCase().includes(term) ||
+                            tool.id.toLowerCase().includes(term) ||
+                            tool.category.toLowerCase().includes(term)
+                        );
+                    }
+
+                    // Filter by category
+                    if (this.selectedCategory) {
+                        filtered = filtered.filter(tool => tool.category === this.selectedCategory);
+                    }
+
+                    // Filter by status
+                    if (this.selectedStatus) {
+                        filtered = filtered.filter(tool => tool.status === this.selectedStatus);
+                    }
+
+                    this.filteredTools = filtered;
+                },
+
+                getStatusColor(status) {
+                    const colors = {
+                        'completed': 'bg-green-600 text-white',
+                        'ready_for_review': 'bg-purple-600 text-white',
+                        'todo': 'bg-blue-600 text-white',
+                        'needs_work': 'bg-orange-600 text-white',
+                        'in_progress': 'bg-yellow-600 text-black'
+                    };
+                    return colors[status] || 'bg-gray-600 text-white';
+                },
+
+                getCategoryColor(category) {
+                    const colors = {
+                        'reconnaissance': 'bg-blue-600 text-white',
+                        'vulnerability': 'bg-red-600 text-white',
+                        'threat_hunting': 'bg-purple-600 text-white',
+                        'network': 'bg-green-600 text-white',
+                        'cryptography': 'bg-yellow-600 text-black',
+                        'forensics': 'bg-indigo-600 text-white',
+                        'cloud': 'bg-cyan-600 text-white',
+                        'mobile': 'bg-pink-600 text-white',
+                        'iot': 'bg-orange-600 text-white',
+                        'ai_security': 'bg-violet-600 text-white'
+                    };
+                    return colors[category] || 'bg-gray-600 text-white';
+                }
+            }
+        }
+    </script>
+</body>
+</html>

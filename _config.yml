@@ -1,0 +1,34 @@
+# Site settings
+title: Security Tool Builder
+description: AI-Generated Cybersecurity Tools
+url: "https://lewiswigmore.github.io"
+baseurl: "/builder-agent"
+
+# Build settings
+markdown: kramdown
+plugins:
+  - jekyll-feed
+
+# Exclude from processing
+exclude:
+  - Gemfile
+  - Gemfile.lock
+  - node_modules
+  - vendor/bundle/
+  - vendor/cache/
+  - vendor/gems/
+  - vendor/ruby/
+  - agent/
+  - tools/
+  - scripts/
+  - tests/
+  - backlog/
+  - requirements.txt
+  - pyproject.toml
+  - "*.py"
+  - "*.yml"
+  - "*.yaml"
+
+# Include files
+include:
+  - docs/
