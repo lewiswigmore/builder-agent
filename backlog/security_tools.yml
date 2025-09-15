@@ -1709,7 +1709,7 @@ security_tools:
   - Records WebRTC SDP offers/ICE candidates from a live session without media capture
     and correlates with network flow metadata.
   ready: true
-  status: in_progress
+  status: needs_work
   area_allowlist:
   - tools/forensics/webworkspace_collector.py
   - tests/test_forensics_007_webworkspace.py
