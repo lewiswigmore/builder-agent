@@ -1741,7 +1741,7 @@ security_tools:
     gate blocks promotion, citing failed cosign verification and missing in-toto provenance,
     with a remediation diff.
   ready: true
-  status: in_progress
+  status: needs_work
   area_allowlist:
   - tools/ai_security/weightwatch.py
   - tests/test_ai_security_015.py
