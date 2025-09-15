@@ -1655,7 +1655,7 @@ security_tools:
   - Validates SDS-issued cert rotation continuity and raises alert on trust bundle
     drift or expiration within a configurable threshold.
   ready: true
-  status: in_progress
+  status: needs_work
   area_allowlist:
   - tools/cloud/meshguard.py
   - tests/test_cloud_013_meshguard.py
