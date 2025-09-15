@@ -126,28 +126,35 @@ class CDPClient:
         asyncio.create_task(self._reader())
 
     async def close(self):
-        if self.conn:
-            await self.conn.close()
+        try:
+            if self.conn:
+                await self.conn.close()
+        except Exception:
+            pass
 
     async def _reader(self):
-        async for msg in self.conn:
-            data = json.loads(msg)
-            if "id" in data:
-                fut = self.pending.pop(data["id"], None)
-                if fut and not fut.done():
-                    fut.set_result(data)
-            else:
-                method = data.get("method")
-                if method:
-                    sid = data.get("sessionId")
-                    # dispatch specific first, then wildcard
-                    for key in [(method, sid), (method, None)]:
-                        for handler in self.event_handlers.get(key, []):
-                            try:
-                                handler(data)
-                            except Exception:
-                                # Don't crash on handler error
-                                pass
+        try:
+            async for msg in self.conn:
+                data = json.loads(msg)
+                if "id" in data:
+                    fut = self.pending.pop(data["id"], None)
+                    if fut and not fut.done():
+                        fut.set_result(data)
+                else:
+                    method = data.get("method")
+                    if method:
+                        sid = data.get("sessionId")
+                        # dispatch specific first, then wildcard
+                        for key in [(method, sid), (method, None)]:
+                            for handler in self.event_handlers.get(key, []):
+                                try:
+                                    handler(data)
+                                except Exception:
+                                    # Don't crash on handler error
+                                    pass
+        except Exception:
+            # Reader terminated
+            pass
 
     def on(self, method: str, handler: Callable[[Dict[str, Any]], None], sessionId: Optional[str] = None):
         self.event_handlers.setdefault((method, sessionId), []).append(handler)
@@ -217,7 +224,7 @@ class WebWorkspaceCollector:
         self.collect_set = set(collect or ["service_workers", "cache", "indexeddb", "localstorage", "wasm", "webrtc"])
         self.two_pass = two_pass
         self.playbook: List[Dict[str, Any]] = []
-        self.client = CDPClient(ws_url, throttle_ms=throttle_ms, playbook=self.playbook)
+        self.client: Optional[CDPClient] = None
         self.sealer = HMACSealer()
         self.artifacts: List[Dict[str, Any]] = []
         self.start_time = now_rfc3339()
@@ -226,134 +233,141 @@ class WebWorkspaceCollector:
     async def run(self):
         print(ETHICAL_WARNING, file=sys.stderr)
         ensure_dir(self.outpath)
-        await self.client.connect()
-        await self.client.set_discover(True)
+        self.client = CDPClient(self.ws_url, throttle_ms=self.throttle_ms, playbook=self.playbook)
+        try:
+            await self.client.connect()
+            await self.client.set_discover(True)
 
-        # Identify page and service worker targets
-        targets = await self.client.get_targets()
-        page_target = None
-        sw_targets: List[Dict[str, Any]] = []
-        for t in targets:
-            typ = t.get("type")
-            url = t.get("url") or ""
-            if typ == "page" and url.startswith(self.origin):
-                page_target = t
-            if typ == "service_worker" and url.startswith(self.origin):
-                sw_targets.append(t)
+            # Identify page and service worker targets
+            targets = await self.client.get_targets()
+            page_target = None
+            sw_targets: List[Dict[str, Any]] = []
+            for t in targets:
+                typ = t.get("type")
+                url = t.get("url") or ""
+                if typ == "page" and url.startswith(self.origin):
+                    page_target = t
+                if typ == "service_worker" and url.startswith(self.origin):
+                    sw_targets.append(t)
 
-        if not page_target:
-            print(f"No page target for origin {self.origin} found. Some collectors may not function.", file=sys.stderr)
+            if not page_target:
+                print(f"No page target for origin {self.origin} found. Some collectors may not function.", file=sys.stderr)
 
-        page_session: Optional[str] = None
-        if page_target:
-            page_session = await self.client.attach(page_target["targetId"])
+            page_session: Optional[str] = None
+            if page_target:
+                try:
+                    page_session = await self.client.attach(page_target["targetId"])
+                except Exception as e:
+                    print(f"Attach to page failed: {e}", file=sys.stderr)
 
-        # Enable domains on page session
-        if page_session:
-            await self.safe_enable(page_session, "Storage.enable")
-            await self.safe_enable(page_session, "DOMStorage.enable")
-            await self.safe_enable(page_session, "IndexedDB.enable")
-            await self.safe_enable(page_session, "Network.enable")
-            await self.safe_enable(page_session, "Debugger.enable")  # for wasm in page
+            # Enable domains on page session
+            if page_session:
+                await self.safe_enable(page_session, "Storage.enable")
+                await self.safe_enable(page_session, "DOMStorage.enable")
+                await self.safe_enable(page_session, "IndexedDB.enable")
+                await self.safe_enable(page_session, "Network.enable")
+                await self.safe_enable(page_session, "Debugger.enable")  # for wasm in page
 
-        # Collect in passes if requested
-        passes = 2 if self.two_pass else 1
-        pass_hashes: List[Dict[str, str]] = []
+            # Collect in passes if requested
+            passes = 2 if self.two_pass else 1
+            pass_hashes: List[Dict[str, str]] = []
 
-        for p in range(passes):
-            pass_id = f"pass_{p+1}"
-            print(f"Starting acquisition {pass_id}...", file=sys.stderr)
+            for p in range(passes):
+                pass_id = f"pass_{p+1}"
+                print(f"Starting acquisition {pass_id}...", file=sys.stderr)
 
-            if "service_workers" in self.collect_set:
-                await self.collect_service_workers(sw_targets)
+                if "service_workers" in self.collect_set:
+                    await self.collect_service_workers(sw_targets)
 
-            if "cache" in self.collect_set and page_session:
-                await self.collect_cache_storage(page_session)
+                if "cache" in self.collect_set and page_session:
+                    await self.collect_cache_storage(page_session)
 
-            if "indexeddb" in self.collect_set and page_session:
-                await self.collect_indexeddb(page_session)
+                if "indexeddb" in self.collect_set and page_session:
+                    await self.collect_indexeddb(page_session)
 
-            if "localstorage" in self.collect_set and page_session:
-                await self.collect_localstorage(page_session)
+                if "localstorage" in self.collect_set and page_session:
+                    await self.collect_localstorage(page_session)
 
-            if "wasm" in self.collect_set:
-                await self.collect_wasm(page_session, sw_targets)
+                if "wasm" in self.collect_set:
+                    await self.collect_wasm(page_session, sw_targets)
 
-            if "webrtc" in self.collect_set and page_session:
-                await self.collect_webrtc(page_session)
+                if "webrtc" in self.collect_set and page_session:
+                    await self.collect_webrtc(page_session)
 
-            # Compute hashes snapshot for consistency check
-            digests = {}
-            for art in self.artifacts:
-                if "path" in art and os.path.isfile(art["path"]):
-                    with open(art["path"], "rb") as f:
-                        digests[os.path.relpath(art["path"], self.outpath)] = sha256_hex(f.read())
-            pass_hashes.append(digests)
+                # Compute hashes snapshot for consistency check
+                digests = {}
+                for art in self.artifacts:
+                    if "path" in art and os.path.isfile(art["path"]):
+                        with open(art["path"], "rb") as f:
+                            digests[os.path.relpath(art["path"], self.outpath)] = sha256_hex(f.read())
+                pass_hashes.append(digests)
 
-        consistency = {}
-        if passes == 2:
-            a, b = pass_hashes
-            changed = {k: (a.get(k), b.get(k)) for k in set(a.keys()).union(set(b.keys())) if a.get(k) != b.get(k)}
-            consistency = {
-                "pass1_count": len(a),
-                "pass2_count": len(b),
-                "differences_count": len(changed),
-                "differences": changed,
+            consistency = {}
+            if passes == 2:
+                a, b = pass_hashes
+                changed = {k: (a.get(k), b.get(k)) for k in set(a.keys()).union(set(b.keys())) if a.get(k) != b.get(k)}
+                consistency = {
+                    "pass1_count": len(a),
+                    "pass2_count": len(b),
+                    "differences_count": len(changed),
+                    "differences": changed,
+                }
+
+            # Build manifest
+            manifest = {
+                "tool": "WebWorkspace Forensic Collector: Browser Runtime Artifact Sealer",
+                "category": "forensics",
+                "version": "1.0.0",
+                "case_id": self.case_id,
+                "operator": self.operator,
+                "origin": self.origin,
+                "ws_url": self.ws_url,
+                "start_time": self.start_time,
+                "end_time": now_rfc3339(),
+                "chain_id": self.chain_id,
+                "pii_minimization": not self.redactor.authorized_secrets,
+                "throttle_ms": self.throttle_ms,
+                "max_bytes": self.max_bytes,
+                "artifacts": self.artifacts,
+                "consistency": consistency,
+                "playbook": self.playbook,
+                "ethics": ETHICAL_WARNING,
             }
 
-        # Build manifest
-        manifest = {
-            "tool": "WebWorkspace Forensic Collector: Browser Runtime Artifact Sealer",
-            "category": "forensics",
-            "version": "1.0.0",
-            "case_id": self.case_id,
-            "operator": self.operator,
-            "origin": self.origin,
-            "ws_url": self.ws_url,
-            "start_time": self.start_time,
-            "end_time": now_rfc3339(),
-            "chain_id": self.chain_id,
-            "pii_minimization": not self.redactor.authorized_secrets,
-            "throttle_ms": self.throttle_ms,
-            "max_bytes": self.max_bytes,
-            "artifacts": self.artifacts,
-            "consistency": consistency,
-            "playbook": self.playbook,
-            "ethics": ETHICAL_WARNING,
-        }
+            # Write manifest and signature
+            manifest_path = os.path.join(self.outpath, "manifest.json")
+            with open(manifest_path, "w", encoding="utf-8") as f:
+                json.dump(manifest, f, indent=2, sort_keys=True)
+            manifest_bytes = json.dumps(manifest, sort_keys=True, separators=(",", ":")).encode("utf-8")
+            sig = self.sealer.sign(manifest_bytes)
+            signature = {
+                "algorithm": "HMAC-SHA256",
+                "signature": sig,
+                "public": self.sealer.export_public(),
+                "timestamp": now_rfc3339(),
+            }
+            with open(os.path.join(self.outpath, "manifest.signature.json"), "w", encoding="utf-8") as f:
+                json.dump(signature, f, indent=2, sort_keys=True)
 
-        # Write manifest and signature
-        manifest_path = os.path.join(self.outpath, "manifest.json")
-        with open(manifest_path, "w", encoding="utf-8") as f:
-            json.dump(manifest, f, indent=2, sort_keys=True)
-        manifest_bytes = json.dumps(manifest, sort_keys=True, separators=(",", ":")).encode("utf-8")
-        sig = self.sealer.sign(manifest_bytes)
-        signature = {
-            "algorithm": "HMAC-SHA256",
-            "signature": sig,
-            "public": self.sealer.export_public(),
-            "timestamp": now_rfc3339(),
-        }
-        with open(os.path.join(self.outpath, "manifest.signature.json"), "w", encoding="utf-8") as f:
-            json.dump(signature, f, indent=2, sort_keys=True)
+            # Zip bundle
+            bundle_path = os.path.join(self.outpath, "bundle.zip")
+            with zipfile.ZipFile(bundle_path, "w", compression=zipfile.ZIP_DEFLATED) as z:
+                for root, _, files in os.walk(self.outpath):
+                    for name in files:
+                        p = os.path.join(root, name)
+                        if os.path.abspath(p) == os.path.abspath(bundle_path):
+                            continue
+                        arcname = os.path.relpath(p, self.outpath)
+                        z.write(p, arcname)
 
-        # Zip bundle
-        bundle_path = os.path.join(self.outpath, "bundle.zip")
-        with zipfile.ZipFile(bundle_path, "w", compression=zipfile.ZIP_DEFLATED) as z:
-            for root, _, files in os.walk(self.outpath):
-                for name in files:
-                    p = os.path.join(root, name)
-                    if os.path.abspath(p) == os.path.abspath(bundle_path):
-                        continue
-                    arcname = os.path.relpath(p, self.outpath)
-                    z.write(p, arcname)
-
-        print(f"Acquisition complete. Bundle at {bundle_path}", file=sys.stderr)
-        await self.client.close()
+            print(f"Acquisition complete. Bundle at {bundle_path}", file=sys.stderr)
+        finally:
+            if self.client:
+                await self.client.close()
 
     async def safe_enable(self, session: str, method: str):
         try:
-            await self.client.send(method, {}, session)
+            await self.client.send(method, {}, session)  # type: ignore
         except Exception as e:
             print(f"Enable {method} failed: {e}", file=sys.stderr)
 
@@ -361,7 +375,7 @@ class WebWorkspaceCollector:
         # Attach to SW targets and capture scripts via Debugger
         for t in sw_targets:
             try:
-                sid = await self.client.attach(t["targetId"])
+                sid = await self.client.attach(t["targetId"])  # type: ignore
                 await self.safe_enable(sid, "Debugger.enable")
                 scripts: Dict[str, Dict[str, Any]] = {}
 
@@ -375,14 +389,14 @@ class WebWorkspaceCollector:
                         return
                     scripts[scriptId] = {"url": url}
 
-                self.client.on("Debugger.scriptParsed", on_parsed, sessionId=sid)
+                self.client.on("Debugger.scriptParsed", on_parsed, sessionId=sid)  # type: ignore
                 # Give a moment to receive existing scripts
                 await asyncio.sleep(0.5)
 
                 for scriptId, meta in scripts.items():
                     try:
                         # Attempt to fetch source (JS)
-                        source = await self.client.send("Debugger.getScriptSource", {"scriptId": scriptId}, sid)
+                        source = await self.client.send("Debugger.getScriptSource", {"scriptId": scriptId}, sid)  # type: ignore
                         text = source.get("scriptSource", "")
                         data = text.encode("utf-8")
                         fname = f"service_workers/{t['targetId']}/{os.path.basename(meta['url']) or scriptId}.js"
@@ -401,7 +415,7 @@ class WebWorkspaceCollector:
                     except CDPError:
                         # Might be WASM; try bytecode
                         try:
-                            bc = await self.client.send("Debugger.getWasmBytecode", {"scriptId": scriptId}, sid)
+                            bc = await self.client.send("Debugger.getWasmBytecode", {"scriptId": scriptId}, sid)  # type: ignore
                             b = base64.b64decode(bc.get("bytecode", ""))
                             fname = f"service_workers/{t['targetId']}/{os.path.basename(meta['url']) or scriptId}.wasm"
                             fpath = os.path.join(self.outpath, fname)
@@ -418,13 +432,13 @@ class WebWorkspaceCollector:
                             })
                         except Exception as e:
                             print(f"SW script fetch failed: {e}", file=sys.stderr)
-                await self.client.detach(sid)
+                await self.client.detach(sid)  # type: ignore
             except Exception as e:
                 print(f"Service worker attach failed: {e}", file=sys.stderr)
 
     async def collect_cache_storage(self, session: str):
         try:
-            caches = await self.client.send("CacheStorage.requestCacheNames", {"securityOrigin": self.origin}, session)
+            caches = await self.client.send("CacheStorage.requestCacheNames", {"securityOrigin": self.origin}, session)  # type: ignore
         except Exception as e:
             print(f"CacheStorage not available: {e}", file=sys.stderr)
             return
@@ -436,7 +450,7 @@ class WebWorkspaceCollector:
             while True:
                 params = {"cacheId": cacheId, "skipCount": total, "pageSize": 100}
                 try:
-                    entries = await self.client.send("CacheStorage.requestEntries", params, session)
+                    entries = await self.client.send("CacheStorage.requestEntries", params, session)  # type: ignore
                 except Exception as e:
                     print(f"CacheStorage.requestEntries failed: {e}", file=sys.stderr)
                     break
@@ -448,7 +462,7 @@ class WebWorkspaceCollector:
                     url = req.get("url", "")
                     # Fetch body
                     try:
-                        resp = await self.client.send("CacheStorage.requestCachedResponse", {
+                        resp = await self.client.send("CacheStorage.requestCachedResponse", {  # type: ignore
                             "cacheId": cacheId,
                             "requestURL": url,
                             "requestHeaders": req.get("headers", []),
@@ -486,13 +500,13 @@ class WebWorkspaceCollector:
 
     async def collect_indexeddb(self, session: str):
         try:
-            dbs = await self.client.send("IndexedDB.requestDatabaseNames", {"securityOrigin": self.origin}, session)
+            dbs = await self.client.send("IndexedDB.requestDatabaseNames", {"securityOrigin": self.origin}, session)  # type: ignore
         except Exception as e:
             print(f"IndexedDB not available: {e}", file=sys.stderr)
             return
         for dbname in dbs.get("databaseNames", []):
             try:
-                dbinfo = await self.client.send("IndexedDB.requestDatabase", {
+                dbinfo = await self.client.send("IndexedDB.requestDatabase", {  # type: ignore
                     "securityOrigin": self.origin,
                     "databaseName": dbname
                 }, session)
@@ -519,7 +533,7 @@ class WebWorkspaceCollector:
                 with open(records_path, "w", encoding="utf-8") as outf:
                     while True:
                         try:
-                            data = await self.client.send("IndexedDB.requestData", {
+                            data = await self.client.send("IndexedDB.requestData", {  # type: ignore
                                 "securityOrigin": self.origin,
                                 "databaseName": dbname,
                                 "objectStoreName": store_name,
@@ -548,7 +562,7 @@ class WebWorkspaceCollector:
     async def collect_localstorage(self, session: str):
         storage_id = {"securityOrigin": self.origin, "isLocalStorage": True}
         try:
-            res = await self.client.send("DOMStorage.getDOMStorageItems", {"storageId": storage_id}, session)
+            res = await self.client.send("DOMStorage.getDOMStorageItems", {"storageId": storage_id}, session)  # type: ignore
         except Exception as e:
             print(f"LocalStorage not available: {e}", file=sys.stderr)
             return
@@ -588,11 +602,11 @@ class WebWorkspaceCollector:
                 if url.endswith(".wasm") or str(params.get("hash", "")).startswith("wasm"):
                     scripts[scriptId] = {"url": url}
 
-            self.client.on("Debugger.scriptParsed", on_parsed, sessionId=page_session)
+            self.client.on("Debugger.scriptParsed", on_parsed, sessionId=page_session)  # type: ignore
             await asyncio.sleep(0.5)
             for sid, meta in scripts.items():
                 try:
-                    bc = await self.client.send("Debugger.getWasmBytecode", {"scriptId": sid}, page_session)
+                    bc = await self.client.send("Debugger.getWasmBytecode", {"scriptId": sid}, page_session)  # type: ignore
                     b = base64.b64decode(bc.get("bytecode", ""))
                     fname = f"wasm/page/{os.path.basename(meta['url']) or sid}.wasm"
                     fpath = os.path.join(self.outpath, fname)
@@ -615,7 +629,7 @@ class WebWorkspaceCollector:
     async def collect_webrtc(self, session: str):
         webrtc_supported = True
         try:
-            await self.client.send("WebRTC.enable", {}, session)
+            await self.client.send("WebRTC.enable", {}, session)  # type: ignore
         except Exception:
             webrtc_supported = False
         events: List[Dict[str, Any]] = []
@@ -628,12 +642,12 @@ class WebWorkspaceCollector:
             def on_ice(evt):
                 if evt.get("sessionId") == session:
                     events.append(evt)
-            self.client.on("WebRTC.peerConnectionUpdated", on_pc, sessionId=session)
-            self.client.on("WebRTC.iceCandidateAdded", on_ice, sessionId=session)
+            self.client.on("WebRTC.peerConnectionUpdated", on_pc, sessionId=session)  # type: ignore
+            self.client.on("WebRTC.iceCandidateAdded", on_ice, sessionId=session)  # type: ignore
         else:
             # Fallback: Log domain; capture 'webrtc' logs where SDP may appear
             try:
-                await self.client.send("Log.enable", {}, session)
+                await self.client.send("Log.enable", {}, session)  # type: ignore
                 def on_log(evt):
                     if evt.get("sessionId") != session:
                         return
@@ -641,7 +655,7 @@ class WebWorkspaceCollector:
                     ent = params.get("entry", {})
                     if ent.get("source") == "webrtc":
                         events.append(evt)
-                self.client.on("Log.entryAdded", on_log, sessionId=session)
+                self.client.on("Log.entryAdded", on_log, sessionId=session)  # type: ignore
             except Exception:
                 pass
 
@@ -680,9 +694,9 @@ class WebWorkspaceCollector:
                     "sdp_hint": sdp_hint,
                     "timestamp": params.get("timestamp"),
                 })
-            self.client.on("Network.webSocketCreated", ws_created, sessionId=session)
-            self.client.on("Network.webSocketFrameSent", ws_frame_sent, sessionId=session)
-            self.client.on("Network.webSocketFrameReceived", ws_frame_recv, sessionId=session)
+            self.client.on("Network.webSocketCreated", ws_created, sessionId=session)  # type: ignore
+            self.client.on("Network.webSocketFrameSent", ws_frame_sent, sessionId=session)  # type: ignore
+            self.client.on("Network.webSocketFrameReceived", ws_frame_recv, sessionId=session)  # type: ignore
         except Exception:
             pass
 
