@@ -1709,7 +1709,7 @@ security_tools:
   - Records WebRTC SDP offers/ICE candidates from a live session without media capture
     and correlates with network flow metadata.
   ready: true
-  status: todo
+  status: needs_work
   area_allowlist:
   - tools/forensics/webworkspace_collector.py
   - tests/test_forensics_007_webworkspace.py
@@ -2521,4 +2521,87 @@ security_tools:
   area_allowlist:
   - tools/iot/uavlink_shield.py
   - tests/test_iot_011.py
+  max_changed_lines: 500
+- id: AI_SECURITY-021
+  title: 'AgentFuzz: LLM Agent Toolchain Policy Fuzzer'
+  category: ai_security
+  description: Actively fuzzes LLM agent toolchains (LangChain, OpenAI functions,
+    Semantic Kernel, custom tools) to discover prompt-injection-led egress, SSRF,
+    and file/system breakout paths. Verifies sandbox/egress policies and produces
+    signed, reproducible attestations for CI/CD gates.
+  security_requirements:
+  - Execute fuzzing only in isolated sandboxes with strict egress allowlists and filesystem
+    jails; never interact with production data or credentials.
+  - Seed signed canary secrets/URLs and enforce redaction of sensitive outputs; store
+    artifacts and alerts with tamper-evident signing (e.g., Sigstore/Rekor).
+  - Provide operator kill-switch, rate limits, and scope guards; respect target allowlists
+    and require approval for high-risk probes.
+  acceptance_tests:
+  - Injection corpus triggers a tool HTTP call to a non-allowlisted domain; request
+    is blocked, and a signed alert with full tool-call trace and policy hash is generated.
+  - SSRF payload attempts access to 169.254.169.254 IMDS; sandbox blocks egress, honey
+    IMDS endpoint access is detected, and an attested incident bundle is emitted.
+  - Agent attempts to write outside jailed path; filesystem escape is prevented, violation
+    is logged with evidence (syscall summary), and attestation includes sandbox config
+    checksum.
+  ready: true
+  status: todo
+  area_allowlist:
+  - tools/ai_security/agentfuzz.py
+  - tests/test_ai_security_021.py
+  max_changed_lines: 500
+- id: CLOUD-020
+  title: 'SecretFlow Sentinel: Cloud Secrets Egress & Misuse Auditor'
+  category: cloud
+  description: Continuously audits AWS Secrets Manager, Azure Key Vault, and GCP Secret
+    Manager for anomalous access, exfil paths, and policy drift. Seeds signed honey
+    secrets, correlates audit logs with egress telemetry, and auto-rotates abused
+    canaries with forensically sound alerts.
+  security_requirements:
+  - Operate with least-privilege, read-only roles by default; canary secrets are segregated,
+    tagged, and rotated without touching production secrets.
+  - Produce cryptographically signed evidence bundles (access logs, policy diffs,
+    network indicators) anchored to external timestamping for chain-of-custody.
+  - Enforce human-in-the-loop approvals for remediation; provide rollback-safe automation
+    and guardrails to avoid destructive actions.
+  acceptance_tests:
+  - Unexpected principal retrieves a honey secret; system generates high-severity
+    alert, rotates the canary, and emits a signed attestation with IAM and network
+    context.
+  - Cross-region secret replication without required tags is detected; policy drift
+    diff and remediation-as-code suggestion are produced and signed.
+  - Anomalous spike in GetSecretValue/Access operations triggers an alert correlated
+    with outbound traffic to a new ASN; confidence score and timeline are included.
+  ready: true
+  status: todo
+  area_allowlist:
+  - tools/cloud/secretflow_sentinel.py
+  - tests/test_cloud_020.py
+  max_changed_lines: 500
+- id: NET-009
+  title: 'OverlayMesh IDS: WireGuard/Tailscale/ZeroTier Covert Exfil Hunter'
+  category: network
+  description: "Privacy-preserving IDS that detects covert exfiltration and lateral\
+    \ movement over overlay networks (WireGuard, Tailscale/DERP, ZeroTier). Profiles\
+    \ handshake/keepalive timing, relay/endpoint fingerprints, peer/key churn, and\
+    \ flow-size entropy\u2014without decrypting payloads."
+  security_requirements:
+  - Operate passively without payload inspection or decryption; collect minimal metadata
+    with privacy-aware retention and anonymization.
+  - Version and sign rulepacks/models; provide explainable features, confidence scores,
+    and reproducible detections.
+  - Rate-limit external enrichment and support allowlists for approved overlay endpoints,
+    relays, and BYOD devices.
+  acceptance_tests:
+  - Long-lived Tailscale DERP tunnel with periodic high-entropy bursts is flagged
+    as probable exfiltration, with relay attribution and feature explanation.
+  - WireGuard peer key churn plus multi-peer fan-out from a server subnet triggers
+    a lateral-movement alert with a reconstructed peer graph.
+  - ZeroTier control-plane bootstrap to an unapproved network ID is detected, suppressed
+    by policy recommendation, and generates a signed alert.
+  ready: true
+  status: todo
+  area_allowlist:
+  - tools/network/overlaymesh_ids.py
+  - tests/test_net_009.py
   max_changed_lines: 500
