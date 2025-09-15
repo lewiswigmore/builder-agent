@@ -403,7 +403,7 @@ class MeshGuard:
                 reasons: List[str] = []
                 if ann.get("sidecar.istio.io/inject") in ("false", "disabled", "0"):
                     reasons.append("annotation sidecar.istio.io/inject disabled")
-                if pod.spec.host_network:
+                if getattr(pod.spec, "host_network", False):
                     reasons.append("hostNetwork=true can bypass mesh")
                 if not has_sidecar:
                     reasons.append("no mesh sidecar detected")
@@ -444,7 +444,9 @@ class MeshGuard:
 
     def _cert_fingerprint(self, cert: Any) -> Optional[str]:
         try:
-            return cert.fingerprint(hashlib.sha256()).hex()  # type: ignore
+            # cryptography requires HashAlgorithm, but this may raise if wrong type is used; we fallback below
+            from cryptography.hazmat.primitives import hashes  # type: ignore
+            return cert.fingerprint(hashes.SHA256()).hex()  # type: ignore
         except Exception:
             try:
                 # Fallback using DER bytes hashing if available
