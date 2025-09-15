@@ -64,7 +64,29 @@ class Redactor:
 
 class HMACSealer:
     def __init__(self, key: Optional[bytes] = None):
-        self.key = key or os.urandom(32)
+        if key is not None:
+            self.key = key
+        else:
+            env_key = os.getenv("WWC_SEAL_KEY")
+            env_key_file = os.getenv("WWC_SEAL_KEY_FILE")
+            k: Optional[bytes] = None
+            if env_key_file and os.path.isfile(env_key_file):
+                with open(env_key_file, "rb") as f:
+                    k = f.read().strip()
+            elif env_key:
+                k = env_key.encode("utf-8")
+            if k:
+                # try to decode hex or base64; fall back to raw bytes
+                ks = k.strip()
+                try:
+                    if re.fullmatch(rb"[0-9a-fA-F]{64}", ks):
+                        self.key = bytes.fromhex(ks.decode("ascii"))
+                    else:
+                        self.key = base64.b64decode(ks)
+                except Exception:
+                    self.key = ks
+            else:
+                self.key = os.urandom(32)
 
     def sign(self, data: bytes) -> str:
         return hmac.new(self.key, data, hashlib.sha256).hexdigest()
@@ -74,6 +96,7 @@ class HMACSealer:
         return {
             "scheme": "HMAC-SHA256",
             "key_hash": sha256_hex(self.key),
+            "note": "Provide WWC_SEAL_KEY/WWC_SEAL_KEY_FILE to reproduce signature verification."
         }
 
 try:
@@ -92,7 +115,8 @@ class CDPClient:
         self.conn = None
         self.msg_id = 0
         self.pending: Dict[int, asyncio.Future] = {}
-        self.event_handlers: Dict[str, List[Callable[[Dict[str, Any]], None]]] = {}
+        # event handlers keyed by (method, sessionId or None for wildcard)
+        self.event_handlers: Dict[Tuple[str, Optional[str]], List[Callable[[Dict[str, Any]], None]]] = {}
         self.sessions: Dict[str, Any] = {}
         self.throttle_ms = throttle_ms
         self.playbook = playbook if playbook is not None else []
@@ -115,15 +139,18 @@ class CDPClient:
             else:
                 method = data.get("method")
                 if method:
-                    for handler in self.event_handlers.get(method, []):
-                        try:
-                            handler(data)
-                        except Exception:
-                            # Don't crash on handler error
-                            pass
+                    sid = data.get("sessionId")
+                    # dispatch specific first, then wildcard
+                    for key in [(method, sid), (method, None)]:
+                        for handler in self.event_handlers.get(key, []):
+                            try:
+                                handler(data)
+                            except Exception:
+                                # Don't crash on handler error
+                                pass
 
-    def on(self, method: str, handler: Callable[[Dict[str, Any]], None]):
-        self.event_handlers.setdefault(method, []).append(handler)
+    def on(self, method: str, handler: Callable[[Dict[str, Any]], None], sessionId: Optional[str] = None):
+        self.event_handlers.setdefault((method, sessionId), []).append(handler)
 
     async def send(self, method: str, params: Optional[Dict[str, Any]] = None, sessionId: Optional[str] = None) -> Dict[str, Any]:
         self.msg_id += 1
@@ -339,6 +366,8 @@ class WebWorkspaceCollector:
                 scripts: Dict[str, Dict[str, Any]] = {}
 
                 def on_parsed(evt):
+                    if evt.get("sessionId") != sid:
+                        return
                     params = evt.get("params", {})
                     scriptId = params.get("scriptId")
                     url = params.get("url") or ""
@@ -346,13 +375,13 @@ class WebWorkspaceCollector:
                         return
                     scripts[scriptId] = {"url": url}
 
-                self.client.on("Debugger.scriptParsed", on_parsed)
+                self.client.on("Debugger.scriptParsed", on_parsed, sessionId=sid)
                 # Give a moment to receive existing scripts
                 await asyncio.sleep(0.5)
 
                 for scriptId, meta in scripts.items():
                     try:
-                        # Attempt to fetch source (JS) or WASM bytecode
+                        # Attempt to fetch source (JS)
                         source = await self.client.send("Debugger.getScriptSource", {"scriptId": scriptId}, sid)
                         text = source.get("scriptSource", "")
                         data = text.encode("utf-8")
@@ -403,7 +432,6 @@ class WebWorkspaceCollector:
             cacheId = cache.get("cacheId")
             cache_dir = os.path.join(self.outpath, "cache", cache.get("cacheName", "unnamed"))
             ensure_dir(cache_dir)
-            skip_token = None
             total = 0
             while True:
                 params = {"cacheId": cacheId, "skipCount": total, "pageSize": 100}
@@ -416,7 +444,7 @@ class WebWorkspaceCollector:
                 if not ents:
                     break
                 for e in ents:
-                    req = e.get("request", {})
+                    req = e.get("request", {}) or {}
                     url = req.get("url", "")
                     # Fetch body
                     try:
@@ -425,11 +453,11 @@ class WebWorkspaceCollector:
                             "requestURL": url,
                             "requestHeaders": req.get("headers", []),
                         }, session)
-                        info = resp.get("response", {})
+                        info = resp.get("response", {}) or {}
                         body_b64 = info.get("body", "")
                         body = base64.b64decode(body_b64) if body_b64 else b""
                         # Save metadata and body truncated
-                        safe_name = re.sub(r"[^A-Za-z0-9_.-]+", "_", url)
+                        safe_name = re.sub(r"[^A-Za-z0-9_.-]+", "_", url)[:200]
                         body_path = os.path.join(cache_dir, f"{safe_name}.body")
                         meta_path = os.path.join(cache_dir, f"{safe_name}.json")
                         with open(body_path, "wb") as f:
@@ -525,7 +553,14 @@ class WebWorkspaceCollector:
             print(f"LocalStorage not available: {e}", file=sys.stderr)
             return
         items = res.get("entries", [])
-        ls = {k: v for k, v, _ in items} if items else {}
+        ls: Dict[str, str] = {}
+        for ent in items:
+            if isinstance(ent, (list, tuple)):
+                if len(ent) >= 2:
+                    k, v = ent[0], ent[1]
+                    ls[str(k)] = str(v)
+            elif isinstance(ent, dict) and "key" in ent and "value" in ent:
+                ls[str(ent.get("key"))] = str(ent.get("value"))
         ls_redacted = self.redactor.redact_obj(ls)
         path = os.path.join(self.outpath, "localstorage.json")
         with open(path, "w", encoding="utf-8") as f:
@@ -542,16 +577,18 @@ class WebWorkspaceCollector:
             scripts: Dict[str, Dict[str, Any]] = {}
 
             def on_parsed(evt):
+                if evt.get("sessionId") != page_session:
+                    return
                 params = evt.get("params", {})
                 scriptId = params.get("scriptId")
                 url = (params.get("url") or "")
                 if not scriptId:
                     return
-                # Heuristic: wasm when url ends with .wasm or has 'isLiveEdit' false and no source
-                if url.endswith(".wasm") or params.get("hash", "").startswith("wasm"):
+                # Heuristic: wasm when url ends with .wasm or param 'hash' indicates wasm
+                if url.endswith(".wasm") or str(params.get("hash", "")).startswith("wasm"):
                     scripts[scriptId] = {"url": url}
 
-            self.client.on("Debugger.scriptParsed", on_parsed)
+            self.client.on("Debugger.scriptParsed", on_parsed, sessionId=page_session)
             await asyncio.sleep(0.5)
             for sid, meta in scripts.items():
                 try:
@@ -586,35 +623,71 @@ class WebWorkspaceCollector:
 
         if webrtc_supported:
             def on_pc(evt):
-                events.append(evt)
+                if evt.get("sessionId") == session:
+                    events.append(evt)
             def on_ice(evt):
-                events.append(evt)
-            self.client.on("WebRTC.peerConnectionUpdated", on_pc)
-            self.client.on("WebRTC.iceCandidateAdded", on_ice)
+                if evt.get("sessionId") == session:
+                    events.append(evt)
+            self.client.on("WebRTC.peerConnectionUpdated", on_pc, sessionId=session)
+            self.client.on("WebRTC.iceCandidateAdded", on_ice, sessionId=session)
         else:
             # Fallback: Log domain; capture 'webrtc' logs where SDP may appear
             try:
                 await self.client.send("Log.enable", {}, session)
                 def on_log(evt):
+                    if evt.get("sessionId") != session:
+                        return
                     params = evt.get("params", {})
                     ent = params.get("entry", {})
                     if ent.get("source") == "webrtc":
                         events.append(evt)
-                self.client.on("Log.entryAdded", on_log)
+                self.client.on("Log.entryAdded", on_log, sessionId=session)
             except Exception:
                 pass
 
+        # Also collect limited WebSocket signaling hints without payload storage
+        ws_events: List[Dict[str, Any]] = []
+        try:
+            def ws_created(evt):
+                if evt.get("sessionId") != session:
+                    return
+                params = evt.get("params", {})
+                ws_events.append({"type": "WebSocketCreated", "url": params.get("url", ""), "timestamp": params.get("timestamp")})
+            def ws_frame_sent(evt):
+                if evt.get("sessionId") != session:
+                    return
+                params = evt.get("params", {})
+                # redact frame payload but keep size and SDP hint
+                payload_data = (params.get("response", {}) or {}).get("payloadData", "")
+                sdp_hint = bool(re.search(r"(?m)^(v=0|a=candidate:)", payload_data or ""))
+                ws_events.append({
+                    "type": "WebSocketFrameSent",
+                    "opcode": (params.get("response", {}) or {}).get("opcode"),
+                    "length": len(payload_data) if isinstance(payload_data, str) else 0,
+                    "sdp_hint": sdp_hint,
+                    "timestamp": params.get("timestamp"),
+                })
+            def ws_frame_recv(evt):
+                if evt.get("sessionId") != session:
+                    return
+                params = evt.get("params", {})
+                payload_data = (params.get("response", {}) or {}).get("payloadData", "")
+                sdp_hint = bool(re.search(r"(?m)^(v=0|a=candidate:)", payload_data or ""))
+                ws_events.append({
+                    "type": "WebSocketFrameReceived",
+                    "opcode": (params.get("response", {}) or {}).get("opcode"),
+                    "length": len(payload_data) if isinstance(payload_data, str) else 0,
+                    "sdp_hint": sdp_hint,
+                    "timestamp": params.get("timestamp"),
+                })
+            self.client.on("Network.webSocketCreated", ws_created, sessionId=session)
+            self.client.on("Network.webSocketFrameSent", ws_frame_sent, sessionId=session)
+            self.client.on("Network.webSocketFrameReceived", ws_frame_recv, sessionId=session)
+        except Exception:
+            pass
+
         # Collect for a window without capturing media
         await asyncio.sleep(self.webrtc_window_sec)
-
-        # Correlate minimal network metadata (no content capture)
-        net_meta: List[Dict[str, Any]] = []
-        try:
-            reqs = await self.client.send("Network.getResponseBodyForInterception", {}, session)  # likely unsupported
-            _ = reqs
-        except Exception:
-            # not supported; skip
-            pass
 
         path = os.path.join(self.outpath, "webrtc_events.json")
         with open(path, "w", encoding="utf-8") as f:
@@ -622,7 +695,8 @@ class WebWorkspaceCollector:
                 "start": start,
                 "end": time.time(),
                 "events": self.redactor.redact_obj(events),
-                "note": "Contains peerConnectionUpdated and iceCandidateAdded where supported; fallback to Log webrtc entries.",
+                "network_ws_meta": ws_events,
+                "note": "Contains WebRTC signaling/ICE related events where supported; payloads redacted/minimized.",
             }, f, indent=2, sort_keys=True)
         self.artifacts.append({
             "type": "webrtc_signaling",
