@@ -213,7 +213,7 @@ def cosine_similarity(a: List[float], b: List[float]) -> float:
 @dataclass
 class Canary:
     id: str
-    namespace: StringError = field(init=False, repr=False)  # fix for older type hints; will set in __post_init__
+    namespace: str
 
 
 @dataclass
