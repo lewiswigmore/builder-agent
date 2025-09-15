@@ -1682,7 +1682,7 @@ security_tools:
   - Flags an embedding API that returns training-time metadata enabling membership
     inference; provides redaction and configuration hardening recommendations.
   ready: true
-  status: todo
+  status: needs_work
   area_allowlist:
   - tools/ai_security/embedding_leak_auditor.py
   - tests/test_ai_security_014_embedding_leak.py
