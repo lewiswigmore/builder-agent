@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 TOOL_NAME = "SDK Sentry: Mobile SDK Supply Chain Beacon & Permission Auditor"
-TOOL_VERSION = "0.1.0"
+TOOL_VERSION = "0.1.1"
 
 # Optional dependencies
 try:
@@ -66,6 +66,15 @@ INSECURE_PINNING_PATTERNS = [
     b"checkServerTrusted",
     b"okhttp3/internal/tls",
     b"InsecureTrustManager",
+]
+
+DYNAMIC_CODE_PATTERNS = [
+    b"DexClassLoader",
+    b"PathClassLoader",
+    b"dalvik.system.DexClassLoader",
+    b"loadDex",
+    b"defineClass",
+    b"BaseDexClassLoader",
 ]
 
 ENDPOINT_REGEX = re.compile(rb"(https?://[A-Za-z0-9\.\-_:]+(?:/[A-Za-z0-9\-\._~:/\?#\[\]@!\$&'\(\)\*\+,;=%]*)?)")
@@ -130,7 +139,7 @@ def aapt_dump_badging(apk: Path) -> Dict[str, str]:
 def parse_permissions_from_manifest_bytes(manifest_bytes: bytes) -> List[str]:
     # Fallback: scan for known android.permission.* strings in binary AXML string pool
     found = set()
-    for m in re.finditer(b"android.permission.[A-Z0-9_\.]+", manifest_bytes):
+    for m in re.finditer(b"android.permission.[A-Z0-9_\\.]+", manifest_bytes):
         try:
             found.add(m.group(0).decode("utf-8", "ignore"))
         except Exception:
@@ -214,6 +223,18 @@ def detect_insecure_pinning(apk: Path, file_list: List[str]) -> List[str]:
             continue
         if any(pat in data for pat in INSECURE_PINNING_PATTERNS):
             flags.append(f"Potential custom TrustManager/hostname verifier in {inner}")
+    return flags
+
+
+def detect_dynamic_code_loading(apk: Path, file_list: List[str]) -> List[str]:
+    flags = []
+    targets = [p for p in file_list if p.endswith(".dex")]
+    for inner in targets:
+        data = apk_read_file(apk, inner)
+        if not data:
+            continue
+        if any(pat in data for pat in DYNAMIC_CODE_PATTERNS):
+            flags.append(f"Potential dynamic code loading usage in {inner}")
     return flags
 
 
@@ -384,6 +405,9 @@ def analyze_static(apk: Path, outdir: Path) -> Dict:
     pinning_flags = detect_insecure_pinning(apk, file_list)
     if pinning_flags:
         static_flags.append({"type": "insecure_pinning_patterns", "details": pinning_flags})
+    dynload_flags = detect_dynamic_code_loading(apk, file_list)
+    if dynload_flags:
+        static_flags.append({"type": "dynamic_code_loading", "details": dynload_flags})
     signing_meta = extract_apk_signing_meta(apk, file_list)
     badging = aapt_dump_badging(apk)
     package_name = badging.get("package_name", "")
@@ -444,47 +468,51 @@ def frida_hook_network(package_name: str, canary: str, duration_sec: int = 30, d
     Java.perform(function() {{
         var Canary = "{canary}";
         function safeLog(x) {{
-            send(x);
+            try {{ send(x); }} catch (e) {{}}
         }}
+        // Hook OkHttp Request.Builder.build to inject canary header
         try {{
             var RequestBuilder = Java.use('okhttp3.Request$Builder');
-            RequestBuilder.build.implementation = function() {{
-                try {{
-                    this.header("X-SDK-Sentry-Canary", Canary);
-                }} catch (e) {{}}
-                return this.build();
+            var buildOver = RequestBuilder.build.overload();
+            buildOver.implementation = function() {{
+                try {{ this.header("X-SDK-Sentry-Canary", Canary); }} catch (e) {{}}
+                return buildOver.call(this);
             }};
             safeLog("OKHTTP_HOOKED");
         }} catch (e) {{
-            safeLog("OKHTTP_HOOK_FAIL");
+            safeLog("OKHTTP_HOOK_FAIL:" + e);
         }}
+        // Hook java.net.URL.openConnection to inject canary header
         try {{
-            var HttpUrlConnection = Java.use('java.net.URL');
-            HttpUrlConnection.openConnection.overload().implementation = function() {{
-                var conn = this.openConnection();
+            var URLClazz = Java.use('java.net.URL');
+            var openOver = URLClazz.openConnection.overload();
+            openOver.implementation = function() {{
+                var conn = openOver.call(this);
                 try {{
-                    var setReqProp = conn.setRequestProperty;
-                    setReqProp.call(conn, "X-SDK-Sentry-Canary", Canary);
+                    conn.setRequestProperty("X-SDK-Sentry-Canary", Canary);
                 }} catch (e) {{}}
                 return conn;
             }};
             safeLog("HUC_HOOKED");
         }} catch (e) {{
-            safeLog("HUC_HOOK_FAIL");
+            safeLog("HUC_HOOK_FAIL:" + e);
         }}
-        // Log constructed requests via OkHttp Call
+        // Log constructed requests via OkHttp RealCall.execute
         try {{
             var RealCall = Java.use('okhttp3.RealCall');
-            RealCall.execute.implementation = function() {{
+            var execOver = RealCall.execute.overload();
+            execOver.implementation = function() {{
                 try {{
                     var req = this.request();
                     var url = req.url().toString();
                     safeLog("REQ:" + url);
                 }} catch (e) {{}}
-                return this.execute();
+                return execOver.call(this);
             }};
             safeLog("REALCALL_HOOKED");
-        }} catch (e) {{}}
+        }} catch (e) {{
+            safeLog("REALCALL_HOOK_FAIL:" + e);
+        }}
     }});
     """
 
