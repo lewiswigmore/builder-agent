@@ -1803,7 +1803,7 @@ security_tools:
     ICE retries and candidate churn; detector correlates fingerprints and raises an
     escalation with remediation guidance.
   ready: true
-  status: todo
+  status: needs_work
   area_allowlist:
   - tools/network/webrtc_covert_hunter.py
   - tests/test_net_005.py
@@ -2690,3 +2690,31 @@ security_tools:
   - tools/iot/sliceguard_5g.py
   - tests/test_iot_012.py
   max_changed_lines: 500
+- id: TI-001
+  title: 'IntelWeave: OSINT Automation & IoC Correlation'
+  category: threat_intelligence
+  description: Plugin-based OSINT orchestrator that harvests, normalizes, and correlates
+    IoCs across sources, enriches with context, maps to MITRE ATT&CK, and exports
+    STIX 2.1 objects with temporal clustering.
+  security_requirements:
+  - Respect robots.txt and source ToS; enforce rate limits, domain allowlists, and
+    privacy filters to avoid collection of non-IoC PII.
+  - Store secrets in a sealed vault, use TLS with cert pinning for API calls, and
+    sign all exported intelligence bundles to assure provenance.
+  - Normalize IoCs with canonical forms and validate against strict schemas; de-duplicate
+    using cryptographic fingerprints to prevent poisoning via lookalike indicators.
+  - Provide operator-controlled retention and redaction policies; maintain auditable
+    trails without exposing raw sensitive content.
+  acceptance_tests:
+  - Given mixed inputs (URLs, hashes, emails) from multiple sources, the system normalizes
+    and de-duplicates IoCs, enriches them, produces STIX 2.1 bundles, and maps observed
+    patterns to ATT&CK techniques with confidence scores.
+  - Crawler plugins adhere to robots.txt, apply per-source rate limits, and refuse
+    to fetch from disallowed domains; attempts to ingest malformed or lookalike IoCs
+    are quarantined and not propagated to correlation graphs.
+  ready: true
+  status: todo
+  area_allowlist:
+  - tools/threat_intelligence/intelweave.py
+  - tests/test_ti_001.py
+  max_changed_lines: 700
