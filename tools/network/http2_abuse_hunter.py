@@ -454,13 +454,17 @@ class HTTP2AbuseHunter:
                 if len(sids) >= 16:
                     break
             confidence = min(1.0, 0.7 + (rst_count - thr.rapid_reset_burst_count) / (thr.rapid_reset_burst_count * 2))
+            label = "high" if confidence >= 0.85 else ("medium" if confidence >= 0.6 else "low")
+            burst_rate = round(rst_count / window, 3) if window > 0 else float("inf")
             return {
                 "burst_window_s": window,
                 "rst_count": rst_count,
                 "frame_count": frame_count,
                 "rst_ratio": round(ratio, 3),
+                "burst_rate_per_s": burst_rate,
                 "stream_ids_sample": sorted(set(sids))[:16],
                 "confidence": round(confidence, 3),
+                "confidence_label": label,
             }
         return None
 
