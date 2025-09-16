@@ -53,7 +53,7 @@ Input (JSON lines over stdin or via API):
       }
 
 Output (JSON lines on stdout for alerts):
-  - Alert object with HMAC signature, time metadata, evidence, and base64 PCAP snippet.
+  - Alert object with HMAC signature, time-synchronized alerts with minimal PCAP snippet and header summaries.
 
 Note: This tool requires metadata observed by a passive sensor. It does not decrypt TLS.
 RST_STREAM and frame metadata may be unavailable on fully encrypted streams; in such cases,
@@ -230,6 +230,8 @@ class ConnectionState:
     tls_ja3: Optional[str] = None
     tls_ja4: Optional[str] = None
     asn: Optional[int] = None
+    src_ip_hash: Optional[str] = None
+    dst_ip_hash: Optional[str] = None
 
     active_streams: Dict[int, str] = field(default_factory=dict)  # sid -> state
     concurrent_high_water: int = 0
@@ -319,7 +321,9 @@ class HTTP2AbuseHunter:
     def _ingest_conn_start(self, e: Dict[str, Any]) -> None:
         try:
             ts = safe_float(e.get("ts"), time.time())
-            fk = self.flow_key(str(e.get("src_ip", "")), safe_int(e.get("src_port")), str(e.get("dst_ip", "")), safe_int(e.get("dst_port")))
+            src_ip = str(e.get("src_ip", ""))
+            dst_ip = str(e.get("dst_ip", ""))
+            fk = self.flow_key(src_ip, safe_int(e.get("src_port")), dst_ip, safe_int(e.get("dst_port")))
             sni = e.get("sni")
             state = ConnectionState(
                 flow_id=fk,
@@ -330,6 +334,8 @@ class HTTP2AbuseHunter:
                 tls_ja3=e.get("tls_ja3"),
                 tls_ja4=e.get("tls_ja4"),
                 asn=safe_int(e.get("asn"), 0) or None,
+                src_ip_hash=self.hash_value(src_ip) if src_ip else None,
+                dst_ip_hash=self.hash_value(dst_ip) if dst_ip else None,
             )
             with self._lock:
                 self._flows[fk] = state
@@ -339,12 +345,20 @@ class HTTP2AbuseHunter:
     def _ingest_http2_frame(self, e: Dict[str, Any]) -> None:
         try:
             ts = safe_float(e.get("ts"), time.time())
-            fk = self.flow_key(str(e.get("src_ip", "")), safe_int(e.get("src_port")), str(e.get("dst_ip", "")), safe_int(e.get("dst_port")))
+            src_ip = str(e.get("src_ip", ""))
+            dst_ip = str(e.get("dst_ip", ""))
+            fk = self.flow_key(src_ip, safe_int(e.get("src_port")), dst_ip, safe_int(e.get("dst_port")))
             with self._lock:
                 st = self._flows.get(fk)
                 if st is None:
                     # Create synthetic state if we missed connection_start
-                    st = ConnectionState(flow_id=fk, started_ts=ts, last_ts=ts)
+                    st = ConnectionState(
+                        flow_id=fk,
+                        started_ts=ts,
+                        last_ts=ts,
+                        src_ip_hash=self.hash_value(src_ip) if src_ip else None,
+                        dst_ip_hash=self.hash_value(dst_ip) if dst_ip else None,
+                    )
                     self._flows[fk] = st
 
                 st.last_ts = ts
@@ -519,7 +533,7 @@ class HTTP2AbuseHunter:
             pcap.add_event_packet(item["ts"], item["event"])
         snippet_b64 = base64.b64encode(pcap.to_bytes()).decode("ascii")
 
-        # Correlate WAF by best-effort using flow hint (not storing plain IPs)
+        # Correlate WAF by IP hash and ASN best-effort
         correlated_waf = self._correlate_waf(st)
 
         # Build mitigation recommendation
@@ -559,17 +573,26 @@ class HTTP2AbuseHunter:
         }
 
     def _correlate_waf(self, st: ConnectionState) -> List[Dict[str, Any]]:
-        # We don't store raw IPs in ConnectionState. Correlate by ASN and JA3/JA4 if possible,
-        # and include any recent WAF entries for the same ASN or flow hash if indexable by IP hash (unknown).
-        # Best-effort: return recent WAF entries that share ASN with state or any recent entries within retention window.
         results: List[Dict[str, Any]] = []
         try:
             now = st.last_ts
-            # Option 1: find entries by ASN match
+            # Primary: match by source/destination IP hash
+            for hip in filter(None, [st.src_ip_hash, st.dst_ip_hash]):
+                if hip in self._waf_index:
+                    for ent in self._waf_index[hip]:
+                        if (now - ent["ts"]) <= self.cfg.retention.waf_retention_s:
+                            results.append(
+                                {
+                                    "ts": utc_iso(ent["ts"]),
+                                    "vendor": ent.get("vendor"),
+                                    "rule_id": ent.get("rule_id"),
+                                    "action": ent.get("action"),
+                                    "asn": ent.get("asn"),
+                                }
+                            )
+            # Secondary: match by ASN if present
             asn = st.asn
-            # Option 2: unknown IP mapping; we can't reverse hash. So keep recent WAF logs by ASN
             if asn:
-                # Scan all indexed IPs for entries with same ASN
                 for hip, entries in self._waf_index.items():
                     for ent in entries:
                         if ent.get("asn") == asn and (now - ent["ts"]) <= self.cfg.retention.waf_retention_s:
@@ -582,6 +605,12 @@ class HTTP2AbuseHunter:
                                     "asn": ent.get("asn"),
                                 }
                             )
+            # Deduplicate by tuple
+            dedup = {}
+            for r in results:
+                key = (r.get("ts"), r.get("vendor"), r.get("rule_id"), r.get("action"), r.get("asn"))
+                dedup[key] = r
+            results = list(dedup.values())
             # Return most recent few
             results.sort(key=lambda x: x.get("ts", ""), reverse=True)
             return results[:10]
@@ -598,6 +627,7 @@ class HTTP2AbuseHunter:
                     "Apply per-connection rate limits on RST_STREAM frames (e.g., drop if > {} in {}s).".format(
                         self.cfg.thresholds.rapid_reset_burst_count, self.cfg.thresholds.rapid_reset_burst_window_s
                     ),
+                    "Create or enable a WAF rule signature for the Rapid Reset pattern; target JA3/JA4 (JA3={}, JA4={}).".format(ja3, ja4),
                     "Lower SETTINGS_MAX_CONCURRENT_STREAMS for suspicious JA3/JA4 (JA3={}, JA4={}).".format(ja3, ja4),
                     "If behind CDN/WAF, enable vendor rapid-reset protections or ruleset; correlate by ASN and JA3.",
                     "Consider temporarily challenging or rate-limiting traffic matching the fingerprint in upstream edge.",
@@ -610,6 +640,7 @@ class HTTP2AbuseHunter:
                         self.cfg.thresholds.max_concurrent_streams_threshold
                     ),
                     "Throttle new stream creation rate per connection and fingerprint (JA3={}, JA4={}).".format(ja3, ja4),
+                    "Deploy a WAF/CDN rule signature to cap stream creation bursts from suspicious fingerprints.",
                 ]
             )
         elif alert_type == "flow_control_abuse":
