@@ -1858,7 +1858,7 @@ security_tools:
   - Integration with WAF logs correlates attacker IP/ASN and produces an actionable
     mitigation recommendation (rate limit, rule signature) in the report.
   ready: true
-  status: todo
+  status: needs_work
   area_allowlist:
   - tools/network/http2_abuse_hunter.py
   - tests/test_network_006.py
@@ -2718,3 +2718,91 @@ security_tools:
   - tools/threat_intelligence/intelweave.py
   - tests/test_ti_001.py
   max_changed_lines: 700
+- id: MOBILE-005
+  title: 'AttestShield Mobile: App Attestation Drift & Replay Auditor'
+  category: mobile
+  description: Audits Android Play Integrity/SafetyNet and iOS DeviceCheck/App Attest
+    implementations across apps and backends. Validates nonce freshness, attestation
+    signature chains, key attestation (TEE/StrongBox/Secure Enclave), and server-side
+    verification. Seeds signed canary challenges, simulates lab-safe emulator/root/JB
+    conditions, detects replay/misbinding, and emits signed, reproducible findings.
+  security_requirements:
+  - Operate in lab/sandbox or read-only telemetry modes; never modify production app
+    behavior or device state.
+  - Use synthetic canary identifiers/nonces only; redact or hash sensitive fields
+    (device IDs, IPs) in stored artifacts.
+  - Pin verification code to trusted roots and verify certificate transparency/Sigstore
+    where applicable; store evidence with timestamps and signatures.
+  acceptance_tests:
+  - 'Backend skipping nonce binding: submit a valid attestation with mismatched nonce;
+    tool flags server verification drift with reproducible proof (request/response
+    hashes, cert chain).'
+  - 'Replay detection: capture a valid attestation and replay it; tool detects timestamp/nonce
+    reuse via seeded canary challenges and marks as replay risk with signed evidence.'
+  - 'Device integrity bypass: run app under emulator/root/JB; tool detects Play Integrity/Attest
+    signals inconsistent with device state and alerts on policy violation.'
+  ready: true
+  status: todo
+  area_allowlist:
+  - tools/mobile/attestshield.py
+  - tests/test_mobile_005.py
+  max_changed_lines: 500
+- id: CRYPTO-003
+  title: 'HybridKEM Downgrade Hunter: PQC/TLS Negotiation Fallback Auditor'
+  category: cryptography
+  description: Active auditor for TLS 1.3/QUIC endpoints to validate post-quantum
+    and hybrid KEM negotiation (e.g., X25519+Kyber). Orchestrates controlled client
+    handshakes using OQS/OpenSSL providers, GREASE-style probes, and ALPN variants
+    to detect downgrade/fallback, policy drift, and misconfigured hybrid ciphersuites.
+    Produces signed handshake transcripts and remediation guidance.
+  security_requirements:
+  - Perform non-destructive, rate-limited scans with user-defined target scopes and
+    opt-out lists; respect robots/txt-like policies.
+  - Store only handshake metadata (fingerprints, ciphers, cert chains) with redacted
+    endpoints where required; no application payload capture.
+  - Keep PQC suite lists, trust stores, and downgrade heuristics configurable; cryptographically
+    sign reports and transcripts for provenance.
+  acceptance_tests:
+  - 'Downgrade simulation: MITM/relay strips hybrid KEM; tool negotiates classical-only
+    and flags downgrade with differential transcript and policy violation.'
+  - 'Compliant endpoint: server advertises and negotiates X25519+Kyber; tool records
+    successful hybrid handshake with ALPN HTTP/2 and marks as compliant.'
+  - 'Error handling: endpoint with invalid chain or ALPN mismatch is gracefully categorized
+    (misconfiguration) with clear, signed diagnostic output.'
+  ready: true
+  status: todo
+  area_allowlist:
+  - tools/cryptography/hybridkem_downgrade_hunter.py
+  - tests/test_cryptography_003.py
+  max_changed_lines: 500
+- id: HUNT-005
+  title: 'ShadowCompute Hunter: Ephemeral Cloud Job Abuse Detector'
+  category: threat_hunting
+  description: Detects adversary abuse of ephemeral cloud compute (AWS Batch/ECS Fargate,
+    GCP Cloud Run Jobs, Azure Container Apps) for cryptomining, data staging, and
+    short-lived exfil. Correlates control-plane logs, image provenance, env var/schedule
+    anomalies, and egress flow headers. Seeds honey images/credentials, scores risk
+    with temporal/graph features, and outputs signed incident bundles with playbooks.
+  security_requirements:
+  - Use least-privilege, read-only access to logs/metrics; deploy honey resources
+    only in dedicated sandbox accounts/projects.
+  - Hash/salt sensitive values (env vars, ARNs, image digests) before storage; enforce
+    retention and access controls on incident bundles.
+  - Rate-limit queries and bound hunt windows; provide dry-run and policy-as-code
+    guardrails for automated responses.
+  acceptance_tests:
+  - 'Cryptomining pattern: sudden job burst pulling unknown public image with sustained
+    CPU/GPU and outbound pool connections; tool flags high risk with IOC-enriched,
+    signed evidence.'
+  - "Honey image trigger: execution of seeded canary image or credential use generates\
+    \ immediate alert, revocation workflow stub, and sealed timeline (create\u2192\
+    run\u2192egress)."
+  - 'Off-hours exfil: job launched outside maintenance window contacting unsanctioned
+    IP/CIDR; tool correlates schedule drift and egress headers, emits remediation
+    playbook.'
+  ready: true
+  status: todo
+  area_allowlist:
+  - tools/threat_hunting/shadowcompute_hunter.py
+  - tests/test_threat_hunting_005.py
+  max_changed_lines: 500
