@@ -441,6 +441,9 @@ class Hunter:
         sni = st.get("tls_sni")
         if sni and (sni in self.allowlist["tls_sni_allow"] or sni in self.allowlist["conferencing_domains"] or sni in self.allowlist["stun_turn_domains"]):
             return True
+        # Pre-approved JA4
+        if st.get("tls_ja4") and st["tls_ja4"] in self.allowlist["pre_approved_ja4"]:
+            return True
         # Baseline fingerprints
         fp = self.flow_fingerprint(key, st)
         bl = self.baseline["entries"].get(fp)
