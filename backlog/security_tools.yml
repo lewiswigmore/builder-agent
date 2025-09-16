@@ -1858,7 +1858,7 @@ security_tools:
   - Integration with WAF logs correlates attacker IP/ASN and produces an actionable
     mitigation recommendation (rate limit, rule signature) in the report.
   ready: true
-  status: todo
+  status: in_progress
   area_allowlist:
   - tools/network/http2_abuse_hunter.py
   - tests/test_network_006.py
