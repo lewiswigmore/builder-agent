@@ -1803,7 +1803,7 @@ security_tools:
     ICE retries and candidate churn; detector correlates fingerprints and raises an
     escalation with remediation guidance.
   ready: true
-  status: todo
+  status: in_progress
   area_allowlist:
   - tools/network/webrtc_covert_hunter.py
   - tests/test_net_005.py
