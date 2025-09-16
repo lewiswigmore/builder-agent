@@ -1772,7 +1772,7 @@ security_tools:
     simulate a misconfiguration and confirm the auditor blocks risky scheduling and
     emits a detailed posture report.
   ready: true
-  status: todo
+  status: needs_work
   area_allowlist:
   - tools/cloud/gpushield.py
   - tests/test_cloud_014.py
@@ -2604,4 +2604,89 @@ security_tools:
   area_allowlist:
   - tools/network/overlaymesh_ids.py
   - tests/test_net_009.py
+  max_changed_lines: 500
+- id: AI_SECURITY-022
+  title: 'RLHF Drift Sentinel: Jailbreak Resilience & Safety Regression Auditor'
+  category: ai_security
+  description: Detects alignment and policy drift in LLMs by orchestrating adaptive
+    jailbreak campaigns, scoring guardrail coverage, seeding signed canary PII traps,
+    and verifying model/dataset provenance. Emits signed, reproducible attestations
+    to gate promotions and alerts on egress policy violations.
+  security_requirements:
+  - "Operate only against allowlisted endpoints/models using synthetic test corpora;\
+    \ do not process real PII\u2014canary strings are signed and synthetic."
+  - Rate-limit and budget test traffic; isolate tool network egress behind allowlists
+    to prevent unintended data flows.
+  - Redact/hash sensitive artifacts and seal evidence/attestations with Sigstore/in-toto
+    and timestamping; store in immutable logs.
+  acceptance_tests:
+  - Given baseline model v1 blocks jailbreak prompt P and candidate v2 produces unsafe
+    output to P, the tool flags a High severity safety regression and blocks promotion
+    with a signed attestation.
+  - When model or dataset artifacts lack a valid Sigstore signature or Rekor inclusion
+    proof, the run fails provenance checks and is marked non-compliant.
+  - If canary PII tokens are echoed or tool invocations attempt egress to non-allowlisted
+    domains, generate a sealed alert with redacted prompts/outputs and a reproducible
+    evidence bundle.
+  ready: true
+  status: todo
+  area_allowlist:
+  - tools/ai_security/rlhf_drift_sentinel.py
+  - tests/test_ai_security_022.py
+  max_changed_lines: 500
+- id: CLOUD-021
+  title: 'BuildCache PoisonGuard: Remote Cache & Artifact Poisoning Auditor'
+  category: cloud
+  description: Audits CI/CD remote build caches and artifact mirrors (e.g., GitHub
+    Actions cache, Bazel/Gradle with S3/GCS) for key-collision abuse, unscoped restore,
+    unsigned artifacts, and cross-tenant pollution. Seeds signed canary cache entries,
+    verifies provenance/SBOMs, and provides policy-as-code remediations.
+  security_requirements:
+  - Use ephemeral, namespaced test keys and opt-in projects only; do not modify or
+    purge production caches without explicit consent.
+  - All canary artifacts/entries are cryptographically signed, time-bounded, and auto-expired/cleaned
+    up after validation.
+  - Verification is read-only for existing artifacts; provenance and SBOM checks are
+    done without executing untrusted build scripts.
+  acceptance_tests:
+  - Detect a cross-repository cache hit by restoring a seeded canary key from a non-allowlisted
+    namespace and flag it as a poisoning risk with scope remediation guidance.
+  - Flag an artifact retrieved from a mirror when its digest/signature does not match
+    the provenance attestation and recommend quarantine.
+  - Identify SBOM drift across successive builds with no dependency changes, attribute
+    it to cache pollution, and emit a policy diff along with a signed attestation.
+  ready: true
+  status: todo
+  area_allowlist:
+  - tools/cloud/buildcache_poison_guard.py
+  - tests/test_cloud_021.py
+  max_changed_lines: 500
+- id: IOT-012
+  title: '5G SliceGuard: Private 5G/IoT Slice Exposure & MEC Egress Auditor'
+  category: iot
+  description: Audits private/enterprise 5G slices and IoT deployments for N3IWF/WiFi-to-5G
+    handover misconfigurations, APN/DNN leaks, SIM/eSIM ACL drift, and MEC breakout
+    egress bypasses. Passively fingerprints NAS/NGAP and TLS posture, runs lab-safe
+    attach/auth simulations, seeds signed honey IMSIs/APNs, and produces sealed, privacy-preserving
+    findings.
+  security_requirements:
+  - Passive-first methodology; active attach/auth simulations are restricted to isolated
+    lab/test cores and authorized segments only.
+  - No real subscriber PII used; honey IMSI/APN tokens are synthetic, scoped, signed,
+    and rotated; RF tests remain within permitted bands using shielding/attenuation.
+  - Anonymize device identifiers and hash protocol transcripts; seal reports with
+    timestamps and chain-of-custody metadata.
+  acceptance_tests:
+  - Flag an N3IWF/UPF configuration that permits traffic bridging without proper IKEv2/mTLS
+    posture or audience scoping during lab simulation, marking it as an egress bypass
+    risk.
+  - Detect MEC breakout routes that allow HTTP/3/CONNECT-UDP tunneling to non-allowlisted
+    domains and produce remediation steps to enforce egress policies.
+  - Upon observing honey IMSI/APN token usage in core/audit logs or captured traces,
+    emit a sealed incident bundle and rotation guidance for implicated credentials/profiles.
+  ready: true
+  status: todo
+  area_allowlist:
+  - tools/iot/sliceguard_5g.py
+  - tests/test_iot_012.py
   max_changed_lines: 500
