@@ -1831,7 +1831,7 @@ security_tools:
   - A benign app using approved SDKs and allowlisted domains completes analysis with
     no high-severity findings and all logs pass signature verification.
   ready: true
-  status: todo
+  status: in_progress
   area_allowlist:
   - tools/mobile/sdk_sentry.py
   - tests/test_mobile_003.py
