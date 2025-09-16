@@ -1772,7 +1772,7 @@ security_tools:
     simulate a misconfiguration and confirm the auditor blocks risky scheduling and
     emits a detailed posture report.
   ready: true
-  status: in_progress
+  status: needs_work
   area_allowlist:
   - tools/cloud/gpushield.py
   - tests/test_cloud_014.py
