@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 import argparse
-import base64
 import datetime
 import hashlib
 import json
@@ -8,7 +7,6 @@ import os
 import subprocess
 import sys
 import tempfile
-import textwrap
 import time
 import uuid
 from typing import Dict, Any, List, Optional, Tuple
@@ -47,7 +45,6 @@ class Shell:
     def run(self, cmd: List[str], input_str: Optional[str] = None, timeout: Optional[int] = None,
             check: bool = True, capture: bool = True) -> Tuple[int, str, str]:
         if self.dry_run:
-            # Simulate successful result
             return 0, "", ""
         stdin_data = input_str.encode("utf-8") if input_str is not None else None
         proc = subprocess.run(cmd, input=stdin_data,
@@ -312,22 +309,16 @@ spec:
         self._record_manifest(job_name, job_yaml)
         self.kctl.apply(job_yaml)
         self.kctl.wait("job", job_name, "complete", timeout_sec=timeout_sec)
-        # get pod name
         pods = self.kctl.get("pods", flags=["-l", f"job-name={job_name}"])
         pod_name = ""
         for item in pods.get("items", []):
             pod_name = item["metadata"]["name"]
             break
         logs = self.kctl.logs(f"pod/{pod_name}") if pod_name else ""
-        # cleanup job and pods to reduce footprint
         self.kctl.delete(job_yaml)
         return logs
 
     def _parse_canary_logs(self, logs: str) -> Dict[str, Any]:
-        # Expect lines:
-        # CANARY_WRITE_OK pattern:<sha256> bytes:<N> time_ms:<T>
-        # NO_RESIDUE pattern:<sha256> scan_mode:<X> time_ms:<T>
-        # RESIDUE_DETECTED pattern:<sha256> matches:<N> max_bytes:<B> scan_mode:<X> time_ms:<T>
         result = {"write": None, "scan": None}
         for line in logs.splitlines():
             line = line.strip()
@@ -351,20 +342,16 @@ spec:
             "jobs": {},
         }
         try:
-            # Create isolated namespaces with quotas
             self._apply_ns_with_quota(ns_a, gpu)
             self._apply_ns_with_quota(ns_b, gpu)
-            # Writer job
             write_cmd = ["gpushield", "write", "--pattern", pattern_hash, "--bytes", "1048576", "--mode", "vram"]
             writer_job = f"gpushield-writer-{uuid.uuid4().hex[:5]}"
             writer_yaml = self._job_yaml(ns_a, writer_job, write_cmd, gpu=gpu, annotations={"gpushield.role": "writer"})
             writer_logs = self._run_job_and_get_logs(ns_a, writer_job, writer_yaml, timeout_sec=900)
             evidence["jobs"]["writer"] = {"job": writer_job, "logs_sha256": sha256_hex(writer_logs.encode("utf-8"))}
             parsed_w = self._parse_canary_logs(writer_logs)
-            # Teardown writer namespace to simulate tenant teardown
             self._delete_ns(ns_a)
             time.sleep(2)
-            # Scanner job
             scan_cmd = ["gpushield", "scan", "--pattern", pattern_hash, "--mode", "vram,bar1", "--timeout", "60s"]
             scanner_job = f"gpushield-scanner-{uuid.uuid4().hex[:5]}"
             scanner_yaml = self._job_yaml(ns_b, scanner_job, scan_cmd, gpu=gpu, annotations={"gpushield.role": "scanner"})
@@ -373,7 +360,6 @@ spec:
             parsed_s = self._parse_canary_logs(scanner_logs)
             end = now_iso()
             evidence["end_time"] = end
-            # Determine leakage
             leakage = False
             if parsed_s.get("scan"):
                 if parsed_s["scan"].startswith("RESIDUE_DETECTED"):
@@ -394,7 +380,6 @@ spec:
             evidence["result"] = "leakage_detected" if leakage else "no_residue"
             return {"evidence": evidence, "finding": finding}
         finally:
-            # Cleanup scanner namespace
             try:
                 self._delete_ns(ns_b)
             except Exception:
@@ -414,7 +399,6 @@ spec:
         results = []
         for item in nodes.get("items", []):
             meta = item.get("metadata", {})
-            status = item.get("status", {})
             caps = item.get("status", {}).get("capacity", {})
             has_gpu = any(k.startswith("nvidia.com") for k in caps.keys())
             name = meta.get("name")
@@ -446,7 +430,6 @@ spec:
             if drv and min_version and self._version_tuple(drv) < self._version_tuple(min_version):
                 noncompliant = True
                 reasons.append(f"driver_version_below_min:{drv}<{min_version}")
-            # Simplified MPS mixed security detection via label
             if disallow_mps_mixed and str(n.get("mps", "")).lower() in ("true", "enabled"):
                 noncompliant = True
                 reasons.append("mps_mixed_security_enabled")
@@ -460,7 +443,6 @@ spec:
             "details": {"noncompliant_nodes": drift_nodes, "policy": remediation_yaml},
         }
         self.findings.append(finding)
-        # Optional enforcement on autoscaling/non-workload nodes: cordon + taint
         if enforce_on_noncompliant and self.safe_enforce_nodes and drift_nodes:
             for dn in drift_nodes:
                 try:
@@ -471,8 +453,6 @@ spec:
         return {"finding": finding, "remediation_policy": remediation_yaml}
 
     def _remediation_policy_yaml(self, drift_nodes: List[Dict[str, Any]]) -> str:
-        # Provide a Gatekeeper Constraint as policy-as-code to block scheduling on noncompliant nodes by label
-        labels_selector = ",".join([f"{dn['node']}" for dn in drift_nodes]) if drift_nodes else ""
         constraint = f"""
 # Example: Gatekeeper constraint to block GPU pods on noncompliant nodes
 apiVersion: constraints.gatekeeper.sh/v1beta1
@@ -545,8 +525,6 @@ metadata:
         }
         self.findings.append(finding)
         if misconfigs and enforce_in_test_ns and self.enforce_block_in_test_ns:
-            # Block risky scheduling in gpushield test namespaces by setting GPU ResourceQuota to 0
-            # Only affects namespaces labeled gpushield.audit=true
             self._block_gpu_in_test_namespaces()
         return {"finding": finding}
 
@@ -564,7 +542,6 @@ metadata:
                     pass
 
     def collect_env_fingerprint(self) -> Dict[str, Any]:
-        # Collect minimal reproducible environment info, no customer data
         cluster = self.kctl.get("nodes")
         node_fps = []
         for n in cluster.get("items", []):
@@ -671,12 +648,7 @@ def main(argv: List[str]) -> int:
         else:
             print("Unknown command", file=sys.stderr)
             return 2
-        # Output JSON report
         print(json.dumps(out, indent=2, sort_keys=True))
-        # Acceptance intent hints in logs (not functional code)
-        # - Two isolated tenants with MIG enabled, residue detection triggers critical finding if match
-        # - Driver/firmware drift detection and remediation policy generation with node enforcement option
-        # - Device-plugin posture audit and GPU scheduling block inside test namespaces
         return 0
     except subprocess.CalledProcessError as e:
         print(f"Command failed: {e.cmd} rc={e.returncode} stderr={e.stderr.decode('utf-8', errors='ignore') if e.stderr else ''}", file=sys.stderr)
